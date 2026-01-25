@@ -37,6 +37,13 @@ from .metrics import (
     BacktestMetrics,
     Trade,
 
+    # Baseline comparison
+    TradeAnalysis,
+    BaselineComparison,
+    calculate_buy_hold_return,
+    compare_to_baseline,
+    analyze_exit_reentry,
+
     # Serialization
     metrics_to_dict,
 )
@@ -57,5 +64,10 @@ __all__ = [
     "run_backtest",
     "BacktestMetrics",
     "Trade",
+    "TradeAnalysis",
+    "BaselineComparison",
+    "calculate_buy_hold_return",
+    "compare_to_baseline",
+    "analyze_exit_reentry",
     "metrics_to_dict",
 ]

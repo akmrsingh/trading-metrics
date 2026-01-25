@@ -37,6 +37,28 @@ class Trade:
 
 
 @dataclass
+class TradeAnalysis:
+    """Enhanced trade with vs-hold analysis for SELL→BUY cycles"""
+    sell_date: str
+    sell_price: float
+    sell_reason: str
+    buy_date: str
+    buy_price: float
+    buy_reason: str
+    price_change_while_out: float  # What market did while we were out
+    benefit: float                  # Positive = avoided loss, Negative = missed gain
+    analysis: str                   # "Avoided 5% drop" or "Missed 3% gain"
+
+
+@dataclass
+class BaselineComparison:
+    """Strategy vs Buy-and-Hold comparison"""
+    strategy_return: float
+    buy_hold_return: float
+    outperformance: float          # strategy - buy_hold
+
+
+@dataclass
 class BacktestMetrics:
     """Complete backtest performance metrics"""
     total_return: float
@@ -531,3 +553,103 @@ def metrics_to_dict(metrics: BacktestMetrics) -> Dict:
         'sell_signals': metrics.sell_signals,
         'hold_signals': metrics.hold_signals
     }
+
+
+# =============================================================================
+# Baseline Comparison Functions
+# =============================================================================
+
+def calculate_buy_hold_return(prices: pd.Series) -> float:
+    """
+    Calculate buy-and-hold return from price series.
+
+    Args:
+        prices: Series of prices (first value = entry, last value = exit)
+
+    Returns:
+        Total return as decimal (e.g., 0.25 for 25%)
+    """
+    if prices is None or len(prices) < 2:
+        return 0.0
+    return float((prices.iloc[-1] / prices.iloc[0]) - 1)
+
+
+def compare_to_baseline(
+    strategy_return: float,
+    prices: pd.Series
+) -> BaselineComparison:
+    """
+    Compare strategy return to buy-and-hold baseline.
+
+    Args:
+        strategy_return: Strategy's total return (decimal)
+        prices: Price series for the period
+
+    Returns:
+        BaselineComparison with outperformance metrics
+    """
+    buy_hold = calculate_buy_hold_return(prices)
+    outperformance = strategy_return - buy_hold
+
+    return BaselineComparison(
+        strategy_return=strategy_return,
+        buy_hold_return=buy_hold,
+        outperformance=outperformance
+    )
+
+
+def analyze_exit_reentry(
+    sell_date: str,
+    sell_price: float,
+    sell_reason: str,
+    buy_date: str,
+    buy_price: float,
+    buy_reason: str
+) -> TradeAnalysis:
+    """
+    Analyze a SELL→BUY cycle vs holding through.
+
+    Baseline: 100% invested (bought in)
+    Trade: SELL at sell_price, BUY back at buy_price
+
+    If market went DOWN while out: "Avoided X% drop" (good exit)
+    If market went UP while out: "Missed X% gain" (bad exit)
+
+    Args:
+        sell_date: Date of SELL
+        sell_price: Price when sold
+        sell_reason: Reason for selling
+        buy_date: Date of re-entry BUY
+        buy_price: Price when bought back
+        buy_reason: Reason for buying
+
+    Returns:
+        TradeAnalysis with vs-hold comparison
+    """
+    # What happened to price while we were OUT?
+    price_change_while_out = (buy_price - sell_price) / sell_price
+
+    # Our benefit: negative price change = we saved money
+    # If buy_price < sell_price: we saved money (positive outcome)
+    # If buy_price > sell_price: we missed gains (negative outcome)
+    benefit = -price_change_while_out  # Flip sign: down market = positive for us
+
+    # Generate analysis text
+    if price_change_while_out < -0.001:  # Market went DOWN
+        analysis = f"Avoided {abs(price_change_while_out)*100:.1f}% drop"
+    elif price_change_while_out > 0.001:  # Market went UP
+        analysis = f"Missed {price_change_while_out*100:.1f}% gain"
+    else:
+        analysis = "Neutral"
+
+    return TradeAnalysis(
+        sell_date=sell_date,
+        sell_price=sell_price,
+        sell_reason=sell_reason,
+        buy_date=buy_date,
+        buy_price=buy_price,
+        buy_reason=buy_reason,
+        price_change_while_out=price_change_while_out,
+        benefit=benefit,
+        analysis=analysis
+    )
