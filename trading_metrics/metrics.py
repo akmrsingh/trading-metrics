@@ -78,6 +78,20 @@ class BacktestMetrics:
     hold_signals: int
 
 
+@dataclass
+class StrategySimulationResult:
+    """
+    Result from simulate_strategy_from_invested().
+
+    PARADIGM: Start 100% invested, every cycle is SELL→BUY.
+    """
+    trades: List[Dict]              # List of {date, action, price, reason}
+    trade_cycles: List[TradeAnalysis]  # SELL→BUY pairs with analysis
+    equity: pd.Series               # Equity curve
+    realized_pnl: float             # Total realized P&L
+    final_position: int             # 1=invested, 0=out (always 1 after implicit buy)
+
+
 # =============================================================================
 # Core Metric Calculations
 # =============================================================================
@@ -384,10 +398,13 @@ def simulate_trades(
     """
     Simulate trades from BUY/SELL signals.
 
-    Strategy:
-        - BUY: Enter position if not in one
-        - SELL: Exit position if in one
-        - HOLD: Do nothing
+    PARADIGM: Start 100% INVESTED (baseline = buy-and-hold)
+        - SELL: Exit position (go to cash)
+        - BUY: Re-enter position
+        - HOLD: Stay in current state
+        - If ends out of market, implicit re-entry at final price
+
+    Every trade cycle is SELL → BUY.
 
     Args:
         df: DataFrame with date, price, signal columns
@@ -404,23 +421,22 @@ def simulate_trades(
     trades = []
     equity = [1.0]
 
-    position = 0  # 0=out, 1=in
-    entry_price = 0.0
-    entry_date = None
+    # START 100% INVESTED
+    position = 1  # 1=invested, 0=out
+    first_row = df.iloc[0]
+    entry_price = float(first_row[price_col])
+    entry_date = str(first_row[date_col])
+    realized_return = 0.0  # Cumulative realized return
 
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
         date = str(row[date_col])
         price = float(row[price_col])
         signal = row[signal_col]
 
-        if signal == 'BUY' and position == 0:
-            position = 1
-            entry_price = price
-            entry_date = date
-
-        elif signal == 'SELL' and position == 1:
+        # SELL: Exit position (if invested)
+        if signal == 'SELL' and position == 1:
             ret = (price - entry_price) / entry_price
-            equity.append(equity[-1] * (1 + ret))
+            realized_return += ret
             trades.append(Trade(
                 entry_date=entry_date,
                 exit_date=date,
@@ -429,24 +445,187 @@ def simulate_trades(
                 return_pct=ret
             ))
             position = 0
-        else:
-            equity.append(equity[-1])
+            equity.append(1.0 + realized_return)
 
-    # Mark to market if still in position
-    if position == 1 and len(df) > 0:
+        # BUY: Re-enter position (if out)
+        elif signal == 'BUY' and position == 0:
+            position = 1
+            entry_price = price
+            entry_date = date
+            equity.append(1.0 + realized_return)
+
+        # HOLD or no action: update equity based on position
+        else:
+            if position == 1:
+                # Mark-to-market: realized + unrealized
+                unrealized = (price - entry_price) / entry_price
+                equity.append(1.0 + realized_return + unrealized)
+            else:
+                # Out of market: equity stays at realized level
+                equity.append(1.0 + realized_return)
+
+    # If ended OUT of position, add implicit re-entry at final price
+    # Every trade cycle must be SELL → BUY
+    if position == 0 and len(df) > 0:
         final_price = float(df.iloc[-1][price_col])
         final_date = str(df.iloc[-1][date_col])
-        ret = (final_price - entry_price) / entry_price
-        equity[-1] = equity[-2] * (1 + ret) if len(equity) > 1 else 1 + ret
+        # Implicit BUY at end (no P&L impact, just closes the cycle)
         trades.append(Trade(
-            entry_date=entry_date,
+            entry_date=final_date,
             exit_date=final_date,
-            entry_price=entry_price,
+            entry_price=final_price,
             exit_price=final_price,
-            return_pct=ret
+            return_pct=0.0  # Implicit re-entry, no return
         ))
 
     return trades, pd.Series(equity)
+
+
+def simulate_strategy_from_invested(
+    prices: pd.DataFrame,
+    exit_condition: callable,
+    reentry_condition: callable,
+    date_col: str = 'date',
+    price_col: str = 'close',
+    initial_equity: float = 10000.0
+) -> StrategySimulationResult:
+    """
+    Simulate a trading strategy starting 100% invested.
+
+    PARADIGM:
+        - Start 100% INVESTED (baseline = buy-and-hold)
+        - Every trade cycle is SELL → BUY (exit, then re-enter)
+        - If ends with SELL (out of market), implicit BUY at final price
+
+    This standardizes the assumption that being invested is the default state.
+    Strategies define when to EXIT and when to RE-ENTER.
+
+    Args:
+        prices: DataFrame with date and price columns
+        exit_condition: Function(row, entry_price) -> (should_exit, reason)
+        reentry_condition: Function(row) -> (should_enter, reason)
+        date_col: Name of date column
+        price_col: Name of price column
+        initial_equity: Starting equity value
+
+    Returns:
+        StrategySimulationResult with trades, trade_cycles, equity curve
+
+    Example:
+        def exit_cond(row, entry_price):
+            drawdown = (row['close'] - entry_price) / entry_price
+            if drawdown <= -0.08:
+                return True, f"Stop loss {drawdown:.1%}"
+            return False, ""
+
+        def reentry_cond(row):
+            if row['pct_from_high'] <= -0.05:
+                return True, f"Dip {row['pct_from_high']:.1%}"
+            return False, ""
+
+        result = simulate_strategy_from_invested(df, exit_cond, reentry_cond)
+    """
+    if prices.empty or len(prices) < 2:
+        return StrategySimulationResult(
+            trades=[],
+            trade_cycles=[],
+            equity=pd.Series([initial_equity]),
+            realized_pnl=0.0,
+            final_position=1
+        )
+
+    # Start 100% INVESTED
+    position = 1
+    entry_price = float(prices.iloc[0][price_col])
+    trades = []
+    equity = [initial_equity]
+    realized_pnl = 0.0
+
+    for i in range(1, len(prices)):
+        row = prices.iloc[i]
+        current_price = float(row[price_col])
+        current_date = str(row[date_col])
+
+        # EXIT LOGIC: Check if we should sell (exit position)
+        if position == 1:
+            should_exit, exit_reason = exit_condition(row, entry_price)
+            if should_exit:
+                # Realize P&L
+                trade_pnl = (current_price - entry_price) / entry_price
+                realized_pnl += trade_pnl
+                position = 0
+                trades.append({
+                    'date': current_date,
+                    'action': 'SELL',
+                    'price': current_price,
+                    'reason': exit_reason
+                })
+
+        # RE-ENTRY LOGIC: Check if we should buy back in
+        elif position == 0:
+            should_enter, entry_reason = reentry_condition(row)
+            if should_enter:
+                position = 1
+                entry_price = current_price
+                trades.append({
+                    'date': current_date,
+                    'action': 'BUY',
+                    'price': current_price,
+                    'reason': entry_reason
+                })
+
+        # Update equity
+        if position == 1:
+            unrealized_pnl = (current_price - entry_price) / entry_price
+            total_pnl = realized_pnl + unrealized_pnl
+            equity.append(initial_equity * (1 + total_pnl))
+        else:
+            equity.append(initial_equity * (1 + realized_pnl))
+
+    # IMPLICIT BUY AT END: If we end out of market, assume bought back
+    # Every trade cycle must be SELL → BUY
+    if position == 0 and len(trades) > 0 and trades[-1]['action'] == 'SELL':
+        final_row = prices.iloc[-1]
+        trades.append({
+            'date': str(final_row[date_col]),
+            'action': 'BUY',
+            'price': float(final_row[price_col]),
+            'reason': 'End of period (implicit re-entry)'
+        })
+        position = 1  # Now back in
+
+    # Build trade cycles (SELL→BUY pairs)
+    trade_cycles = []
+    i = 0
+    while i < len(trades):
+        if trades[i]['action'] == 'SELL':
+            sell_trade = trades[i]
+            # Find next BUY
+            buy_trade = None
+            for j in range(i + 1, len(trades)):
+                if trades[j]['action'] == 'BUY':
+                    buy_trade = trades[j]
+                    break
+
+            if buy_trade:
+                analysis = analyze_exit_reentry(
+                    sell_date=sell_trade['date'],
+                    sell_price=sell_trade['price'],
+                    sell_reason=sell_trade['reason'],
+                    buy_date=buy_trade['date'],
+                    buy_price=buy_trade['price'],
+                    buy_reason=buy_trade['reason']
+                )
+                trade_cycles.append(analysis)
+        i += 1
+
+    return StrategySimulationResult(
+        trades=trades,
+        trade_cycles=trade_cycles,
+        equity=pd.Series(equity),
+        realized_pnl=realized_pnl,
+        final_position=position
+    )
 
 
 # =============================================================================

@@ -2,43 +2,134 @@
 
 Shared performance metrics library for trading projects.
 
+## Trading Paradigm
+
+**All simulations follow the standardized "Start Invested" paradigm:**
+
+1. **Start 100% invested** - Baseline is buy-and-hold
+2. **Every trade cycle = SELL → BUY** - Exit position, then re-enter
+3. **Implicit BUY at end** - If simulation ends with SELL (out of market), automatically re-enter at final price
+
+This standardizes the assumption that being invested is the default state. Strategies define when to EXIT and when to RE-ENTER.
+
+```
+Timeline Example:
+Day 1: Start INVESTED at $100
+Day 5: SELL at $95 (exit) ─┐
+Day 8: BUY at $90 (re-enter)─┘ Trade Cycle 1: Avoided $5 drop
+Day 12: SELL at $92 (exit) ─┐
+Day 15: End at $88 ─────────┘ Trade Cycle 2: Implicit BUY at $88
+```
+
 ## Installation
 
 ```bash
 # From local path
 pip install -e /path/to/trading-metrics
 
-# From GitHub (after pushing)
+# From GitHub
 pip install git+https://github.com/YOUR_USERNAME/trading-metrics.git
 ```
 
 ## Usage
+
+### Basic Metrics
 
 ```python
 from trading_metrics import (
     calculate_sharpe_ratio,
     calculate_max_drawdown,
     calculate_total_return,
-    run_backtest
+    calculate_buy_hold_return,
 )
 
 import pandas as pd
 
-# Calculate individual metrics
+# Calculate individual metrics from returns series
 returns = pd.Series([0.01, -0.02, 0.03, 0.01, -0.01])
 sharpe = calculate_sharpe_ratio(returns)
 max_dd = calculate_max_drawdown(returns)
 total_ret = calculate_total_return(returns)
 
-# Or run full backtest
+# Calculate baseline comparison
+prices = pd.Series([100, 102, 98, 105, 103])
+buy_hold = calculate_buy_hold_return(prices)
+```
+
+### Backtest from Signals
+
+```python
+from trading_metrics import run_backtest, metrics_to_dict
+
+# DataFrame with BUY/SELL/HOLD signals
 df = pd.DataFrame({
-    'date': ['2024-01-01', '2024-01-02', '2024-01-03'],
-    'price': [100, 102, 101],
-    'action': ['BUY', 'HOLD', 'SELL']
+    'date': ['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05'],
+    'price': [100, 95, 90, 92, 98],
+    'action': ['HOLD', 'SELL', 'HOLD', 'BUY', 'HOLD']
 })
+
+# Run backtest (starts 100% invested)
 metrics = run_backtest(df)
 print(f"Total Return: {metrics.total_return:.2%}")
 print(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
+print(f"Max Drawdown: {metrics.max_drawdown:.2%}")
+
+# Convert to dict for JSON
+result = metrics_to_dict(metrics)
+```
+
+### Custom Strategy Simulation
+
+```python
+from trading_metrics import simulate_strategy_from_invested
+
+# Define exit condition (when to SELL)
+def exit_condition(row, entry_price):
+    drawdown = (row['close'] - entry_price) / entry_price
+    if drawdown <= -0.08:  # 8% stop loss
+        return True, f"Stop loss {drawdown:.1%}"
+    return False, ""
+
+# Define re-entry condition (when to BUY back)
+def reentry_condition(row):
+    if row['pct_from_high'] <= -0.05:  # 5% dip from high
+        return True, f"Dip {row['pct_from_high']:.1%}"
+    return False, ""
+
+# Simulate (starts 100% invested)
+result = simulate_strategy_from_invested(
+    prices=df,
+    exit_condition=exit_condition,
+    reentry_condition=reentry_condition,
+    date_col='date',
+    price_col='close'
+)
+
+# Access results
+print(f"Trades: {len(result.trades)}")
+print(f"Trade Cycles: {len(result.trade_cycles)}")
+print(f"Final Equity: {result.equity.iloc[-1]:.2f}")
+```
+
+### Trade Cycle Analysis
+
+```python
+from trading_metrics import analyze_exit_reentry
+
+# Analyze a SELL→BUY cycle vs holding through
+analysis = analyze_exit_reentry(
+    sell_date='2024-01-02',
+    sell_price=95.0,
+    sell_reason='Stop loss',
+    buy_date='2024-01-05',
+    buy_price=90.0,
+    buy_reason='Dip buy'
+)
+
+print(f"Price change while out: {analysis.price_change_while_out:.1%}")
+print(f"Benefit: {analysis.benefit:.1%}")
+print(f"Analysis: {analysis.analysis}")
+# Output: "Avoided 5.3% drop"
 ```
 
 ## Available Functions
@@ -47,7 +138,7 @@ print(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
 | Function | Description |
 |----------|-------------|
 | `calculate_sharpe_ratio(returns)` | Annualized Sharpe ratio |
-| `calculate_sortino_ratio(returns)` | Annualized Sortino ratio |
+| `calculate_sortino_ratio(returns)` | Annualized Sortino ratio (downside risk) |
 | `calculate_max_drawdown(returns)` | Maximum drawdown |
 | `calculate_total_return(returns)` | Total cumulative return |
 | `calculate_cagr(returns)` | Compound Annual Growth Rate |
@@ -60,17 +151,39 @@ print(f"Sharpe Ratio: {metrics.sharpe_ratio:.2f}")
 | `calculate_daily_win_rate(returns)` | % of profitable days |
 | `calculate_monthly_win_rate(returns)` | % of profitable months |
 
-### High-Level
+### Simulation (Start Invested Paradigm)
 | Function | Description |
 |----------|-------------|
-| `run_backtest(df)` | Run complete backtest from signals |
-| `simulate_trades(df)` | Simulate BUY/SELL trades |
+| `simulate_trades(df)` | Simulate from BUY/SELL signals |
+| `simulate_strategy_from_invested(...)` | Simulate with custom exit/reentry conditions |
+| `run_backtest(df)` | Full backtest returning BacktestMetrics |
+
+### Baseline Comparison
+| Function | Description |
+|----------|-------------|
+| `calculate_buy_hold_return(prices)` | Buy-and-hold return |
+| `compare_to_baseline(strategy_return, prices)` | Strategy vs buy-and-hold |
+| `analyze_exit_reentry(...)` | Analyze SELL→BUY cycle vs holding |
+
+### Data Classes
+| Class | Description |
+|-------|-------------|
+| `BacktestMetrics` | Complete backtest results |
+| `StrategySimulationResult` | Simulation output with trades, cycles, equity |
+| `TradeAnalysis` | SELL→BUY cycle analysis |
+| `Trade` | Single trade record |
 
 ## Formula Reference
 
 ### Sharpe Ratio
 ```
 Sharpe = (mean(returns) - risk_free_rate) / std(returns) * sqrt(252)
+```
+
+### Sortino Ratio
+```
+downside_returns = returns[returns < 0]
+Sortino = (mean(returns) - risk_free_rate) / std(downside_returns) * sqrt(252)
 ```
 
 ### Max Drawdown
@@ -86,8 +199,13 @@ max_drawdown = min(drawdown)
 total_return = prod(1 + returns) - 1
 ```
 
+### CAGR
+```
+CAGR = (final_value / initial_value) ^ (1 / years) - 1
+```
+
 ## Dependencies
 
 - pandas
 - numpy
-- quantstats (for validated calculations)
+- quantstats (for validated calculations, optional fallback to manual)

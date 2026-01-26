@@ -29,8 +29,12 @@ from .metrics import (
     # Trade helpers
     calculate_avg_trade_return,
 
-    # Simulation
+    # Simulation (legacy - starts with cash)
     simulate_trades,
+
+    # Simulation (standardized - starts 100% invested)
+    simulate_strategy_from_invested,
+    StrategySimulationResult,
 
     # High-level backtest
     run_backtest,
@@ -61,6 +65,8 @@ __all__ = [
     "calculate_monthly_win_rate",
     "calculate_avg_trade_return",
     "simulate_trades",
+    "simulate_strategy_from_invested",
+    "StrategySimulationResult",
     "run_backtest",
     "BacktestMetrics",
     "Trade",
