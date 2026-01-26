@@ -56,6 +56,7 @@ class BaselineComparison:
     strategy_return: float
     buy_hold_return: float
     outperformance: float          # strategy - buy_hold
+    outperformance_pct: float      # (strategy / buy_hold - 1) * 100
 
 
 @dataclass
