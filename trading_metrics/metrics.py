@@ -915,11 +915,13 @@ def compare_to_baseline(
     """
     buy_hold = calculate_buy_hold_return(prices)
     outperformance = strategy_return - buy_hold
+    outperformance_pct = ((1 + strategy_return) / (1 + buy_hold) - 1) * 100 if buy_hold != -1 else 0.0
 
     return BaselineComparison(
         strategy_return=strategy_return,
         buy_hold_return=buy_hold,
-        outperformance=outperformance
+        outperformance=outperformance,
+        outperformance_pct=outperformance_pct
     )
 
 
