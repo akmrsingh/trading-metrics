@@ -87,7 +87,8 @@ class StrategySimulationResult:
     """
     trades: List[Dict]              # List of {date, action, price, reason}
     trade_cycles: List[TradeAnalysis]  # SELL→BUY pairs with analysis
-    equity: pd.Series               # Equity curve
+    equity: pd.Series               # Strategy equity curve
+    baseline_equity: pd.Series      # Buy-and-hold equity curve (for comparison)
     realized_pnl: float             # Total realized P&L
     final_position: int             # 1=invested, 0=out (always 1 after implicit buy)
 
@@ -530,13 +531,22 @@ def simulate_strategy_from_invested(
             trades=[],
             trade_cycles=[],
             equity=pd.Series([initial_equity]),
+            baseline_equity=pd.Series([initial_equity]),
             realized_pnl=0.0,
             final_position=1
         )
 
-    # Start 100% INVESTED
+    # Calculate BASELINE (buy-and-hold) equity curve
+    first_price = float(prices.iloc[0][price_col])
+    baseline_equity = [initial_equity]
+    for i in range(1, len(prices)):
+        current_price = float(prices.iloc[i][price_col])
+        baseline_return = (current_price - first_price) / first_price
+        baseline_equity.append(initial_equity * (1 + baseline_return))
+
+    # Start 100% INVESTED for strategy
     position = 1
-    entry_price = float(prices.iloc[0][price_col])
+    entry_price = first_price
     trades = []
     equity = [initial_equity]
     realized_pnl = 0.0
@@ -623,6 +633,7 @@ def simulate_strategy_from_invested(
         trades=trades,
         trade_cycles=trade_cycles,
         equity=pd.Series(equity),
+        baseline_equity=pd.Series(baseline_equity),
         realized_pnl=realized_pnl,
         final_position=position
     )
@@ -751,6 +762,44 @@ def calculate_buy_hold_return(prices: pd.Series) -> float:
     if prices is None or len(prices) < 2:
         return 0.0
     return float((prices.iloc[-1] / prices.iloc[0]) - 1)
+
+
+def calculate_baseline_equity(
+    prices: pd.Series,
+    initial_equity: float = 10000.0
+) -> pd.Series:
+    """
+    Calculate buy-and-hold equity curve for baseline comparison on charts.
+
+    This is the standard baseline for all performance charts:
+    - Start 100% invested at initial_equity
+    - Track value over time as if held without any trades
+
+    Args:
+        prices: Series of prices
+        initial_equity: Starting equity value (default 10000)
+
+    Returns:
+        Series of equity values (same length as prices)
+
+    Example:
+        prices = pd.Series([100, 105, 95, 110])
+        baseline = calculate_baseline_equity(prices, 10000)
+        # Returns: [10000, 10500, 9500, 11000]
+    """
+    if prices is None or len(prices) < 1:
+        return pd.Series([initial_equity])
+
+    first_price = float(prices.iloc[0])
+    if first_price == 0:
+        return pd.Series([initial_equity] * len(prices))
+
+    equity = []
+    for price in prices:
+        ret = (float(price) - first_price) / first_price
+        equity.append(initial_equity * (1 + ret))
+
+    return pd.Series(equity)
 
 
 def compare_to_baseline(

@@ -45,6 +45,7 @@ from .metrics import (
     TradeAnalysis,
     BaselineComparison,
     calculate_buy_hold_return,
+    calculate_baseline_equity,
     compare_to_baseline,
     analyze_exit_reentry,
 
@@ -73,6 +74,7 @@ __all__ = [
     "TradeAnalysis",
     "BaselineComparison",
     "calculate_buy_hold_return",
+    "calculate_baseline_equity",
     "compare_to_baseline",
     "analyze_exit_reentry",
     "metrics_to_dict",
