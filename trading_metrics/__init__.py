@@ -38,7 +38,9 @@ from .metrics import (
 
     # High-level backtest
     run_backtest,
+    run_backtest_with_curves,
     BacktestMetrics,
+    BacktestResult,
     Trade,
 
     # Baseline comparison
@@ -69,7 +71,9 @@ __all__ = [
     "simulate_strategy_from_invested",
     "StrategySimulationResult",
     "run_backtest",
+    "run_backtest_with_curves",
     "BacktestMetrics",
+    "BacktestResult",
     "Trade",
     "TradeAnalysis",
     "BaselineComparison",

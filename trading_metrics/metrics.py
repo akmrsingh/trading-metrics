@@ -93,6 +93,24 @@ class StrategySimulationResult:
     final_position: int             # 1=invested, 0=out (always 1 after implicit buy)
 
 
+@dataclass
+class BacktestResult:
+    """
+    Complete backtest result with metrics, equity curves, and baseline comparison.
+
+    This is the standard result format for all backtests/model evaluations.
+    Use run_backtest_with_curves() to get this result.
+    """
+    # Core metrics from trading-metrics
+    metrics: BacktestMetrics
+
+    # Baseline comparison
+    baseline: BaselineComparison
+
+    # Equity curves for dual-line charts (both scaled to same initial value)
+    equity_curve: List[Dict]  # [{date, strategy, baseline}, ...]
+
+
 # =============================================================================
 # Core Metric Calculations
 # =============================================================================
@@ -721,6 +739,84 @@ def run_backtest(
         buy_signals=buy_signals,
         sell_signals=sell_signals,
         hold_signals=hold_signals
+    )
+
+
+def run_backtest_with_curves(
+    df: pd.DataFrame,
+    date_col: str = 'date',
+    price_col: str = 'price',
+    signal_col: str = 'action',
+    initial_equity: float = 10000.0
+) -> BacktestResult:
+    """
+    Run complete backtest and return metrics, equity curves, and baseline comparison.
+
+    This is the STANDARD function for all model/strategy evaluations.
+    Returns everything needed for UI display including dual-line charts.
+
+    PARADIGM: Start 100% invested (baseline = buy-and-hold)
+        - SELL: Exit position
+        - BUY: Re-enter position
+        - HOLD: Stay in current state
+
+    Args:
+        df: DataFrame with date, price, signal columns
+        date_col: Name of date column
+        price_col: Name of price column
+        signal_col: Name of signal column ('BUY', 'SELL', 'HOLD')
+        initial_equity: Starting equity value for curves (default 10000)
+
+    Returns:
+        BacktestResult with metrics, baseline comparison, and equity curves
+    """
+    empty_metrics = BacktestMetrics(
+        total_return=0.0, cagr=0.0, sharpe_ratio=0.0, sortino_ratio=0.0,
+        max_drawdown=0.0, volatility=0.0, win_rate=0.0, daily_win_rate=0.0,
+        monthly_win_rate=0.0, num_trades=0, avg_trade_return=0.0,
+        total_signals=0, buy_signals=0, sell_signals=0, hold_signals=0
+    )
+    empty_baseline = BaselineComparison(
+        strategy_return=0.0, buy_hold_return=0.0,
+        outperformance=0.0, outperformance_pct=0.0
+    )
+
+    if df.empty or len(df) < 2:
+        return BacktestResult(
+            metrics=empty_metrics,
+            baseline=empty_baseline,
+            equity_curve=[]
+        )
+
+    # Get standard metrics
+    metrics = run_backtest(df, date_col, price_col, signal_col)
+
+    # Simulate trades to get strategy equity (normalized, starts at 1.0)
+    _, strategy_equity_norm = simulate_trades(df, date_col, price_col, signal_col)
+
+    # Calculate baseline (buy-and-hold) equity
+    baseline_equity = calculate_baseline_equity(df[price_col], initial_equity)
+
+    # Scale strategy equity to same initial value
+    strategy_equity = [e * initial_equity for e in strategy_equity_norm]
+
+    # Build equity curve for frontend (dual-line chart)
+    equity_curve = []
+    for i in range(len(df)):
+        equity_curve.append({
+            "date": str(df.iloc[i][date_col]),
+            "strategy": float(strategy_equity[i]) if i < len(strategy_equity) else float(strategy_equity[-1]),
+            "baseline": float(baseline_equity.iloc[i]) if i < len(baseline_equity) else float(baseline_equity.iloc[-1]),
+        })
+
+    # Calculate baseline comparison
+    buy_hold_return = calculate_buy_hold_return(df[price_col])
+    baseline = compare_to_baseline(metrics.total_return, df[price_col])
+
+    return BacktestResult(
+        metrics=metrics,
+        baseline=baseline,
+        equity_curve=equity_curve
     )
 
 
