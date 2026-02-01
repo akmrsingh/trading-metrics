@@ -3,6 +3,7 @@ pyproject.toml
 tests/__init__.py
 tests/test_metrics.py
 trading_metrics/__init__.py
+trading_metrics/backfill_db.py
 trading_metrics/metrics.py
 trading_metrics.egg-info/PKG-INFO
 trading_metrics.egg-info/SOURCES.txt

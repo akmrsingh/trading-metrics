@@ -418,6 +418,152 @@ class TestRunBacktest:
         assert result.total_return == 0.0
 
 
+class TestRunBacktestWithBoundaries:
+    """Tests for run_backtest_with_boundaries - the standard function for prediction signals."""
+
+    def test_basic_sell_buy_cycle(self):
+        """Test basic SELL then BUY cycle with boundaries."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        # Start at 100, SELL at 110, BUY at 90, end at 100
+        signals = pd.DataFrame({
+            'date': ['2024-01-15', '2024-02-01'],
+            'price': [110.0, 90.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=100.0, end_price=100.0,
+            start_date='2024-01-01', end_date='2024-03-01'
+        )
+
+        # B&H: 100 -> 100 = 0%
+        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
+
+        # Strategy: Started at 100, grew to 110 (+10%), sold
+        # Out while dropped to 90
+        # Bought at 90, grew to 100 (+11.1%)
+        # Total: 1.10 * 1.111 = 1.222 = +22.2%
+        assert result.metrics.total_return == pytest.approx(0.222, rel=0.05)
+        assert result.baseline.outperformance > 0.20  # Beat B&H by ~22%
+
+    def test_no_signals_equals_buy_hold(self):
+        """No signals means stayed invested = same as B&H."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        result = run_backtest_with_boundaries(
+            signals_df=pd.DataFrame(),
+            start_price=100.0, end_price=120.0,
+            start_date='2024-01-01', end_date='2024-12-31'
+        )
+
+        # B&H = 20%
+        assert result.baseline.buy_hold_return == pytest.approx(0.20, rel=0.01)
+        # Strategy = B&H when no signals
+        assert result.baseline.strategy_return == pytest.approx(0.20, rel=0.01)
+        assert result.baseline.outperformance == pytest.approx(0.0, abs=0.01)
+
+    def test_bad_timing_underperforms(self):
+        """Bad timing (sell low, buy high) should underperform B&H."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        # SELL at bottom (90), BUY at top (110) - terrible timing
+        signals = pd.DataFrame({
+            'date': ['2024-01-15', '2024-02-01'],
+            'price': [90.0, 110.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=100.0, end_price=100.0,
+            start_date='2024-01-01', end_date='2024-03-01'
+        )
+
+        # B&H = 0%
+        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
+
+        # Strategy: Started at 100, dropped to 90 (-10%), sold
+        # Missed rally to 110
+        # Bought at 110, dropped to 100 (-9%)
+        # Total: 0.90 * 0.91 = 0.82 = -18%
+        assert result.metrics.total_return < 0
+        assert result.baseline.outperformance < 0  # Underperformed B&H
+
+    def test_first_signal_is_sell(self):
+        """First signal being SELL should still work correctly."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        # Only SELL signal, no BUY - stays in cash until end
+        signals = pd.DataFrame({
+            'date': ['2024-01-15'],
+            'price': [110.0],
+            'action': ['SELL']
+        })
+
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=100.0, end_price=90.0,
+            start_date='2024-01-01', end_date='2024-03-01'
+        )
+
+        # B&H: 100 -> 90 = -10%
+        assert result.baseline.buy_hold_return == pytest.approx(-0.10, rel=0.01)
+
+        # Strategy: Started at 100, grew to 110 (+10%), sold, stayed cash
+        # Avoided drop from 110 to 90
+        # Return = +10% (just the first leg)
+        assert result.metrics.total_return == pytest.approx(0.10, rel=0.05)
+        assert result.baseline.outperformance > 0.15  # Beat B&H significantly
+
+    def test_multiple_cycles(self):
+        """Multiple SELL-BUY cycles should accumulate correctly."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        signals = pd.DataFrame({
+            'date': ['2024-01-10', '2024-01-20', '2024-02-10', '2024-02-20'],
+            'price': [110.0, 100.0, 115.0, 105.0],
+            'action': ['SELL', 'BUY', 'SELL', 'BUY']
+        })
+
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=100.0, end_price=110.0,
+            start_date='2024-01-01', end_date='2024-03-01'
+        )
+
+        # Should have 2 trade cycles
+        assert result.metrics.num_trades == 2
+
+    def test_realistic_tqqq_scenario(self):
+        """Test with realistic TQQQ-like numbers."""
+        from trading_metrics import run_backtest_with_boundaries
+
+        # TQQQ drops 40%, strategy exits early
+        signals = pd.DataFrame({
+            'date': ['2024-02-01', '2024-03-15'],
+            'price': [75.0, 50.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=80.0, end_price=60.0,
+            start_date='2024-01-01', end_date='2024-04-01'
+        )
+
+        # B&H: 80 -> 60 = -25%
+        assert result.baseline.buy_hold_return == pytest.approx(-0.25, rel=0.01)
+
+        # Strategy: Started at 80, dropped to 75 (-6.25%), sold
+        # Out while dropped to 50
+        # Bought at 50, grew to 60 (+20%)
+        # Total: 0.9375 * 1.20 = 1.125 = +12.5%
+        assert result.metrics.total_return > 0  # Positive return
+        assert result.baseline.outperformance > 0.35  # Beat B&H by a lot
+
+
 class TestMetricsIntegration:
     """Integration tests verifying metrics work together correctly."""
 

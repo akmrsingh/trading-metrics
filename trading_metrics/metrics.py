@@ -821,6 +821,152 @@ def run_backtest_with_curves(
     )
 
 
+def run_backtest_with_boundaries(
+    signals_df: pd.DataFrame,
+    start_price: float,
+    end_price: float,
+    start_date,
+    end_date,
+    date_col: str = 'date',
+    price_col: str = 'price',
+    signal_col: str = 'action'
+) -> BacktestResult:
+    """
+    Run backtest on sparse BUY/SELL signals with explicit period boundaries.
+
+    This is the STANDARD function for backtesting prediction signals.
+    Handles the common case where you have:
+    - Sparse BUY/SELL signals (not daily data)
+    - Known start/end prices for the period
+
+    PARADIGM: Start 100% invested
+        - SELL: Exit position (go to cash)
+        - BUY: Re-enter position
+        - If period ends while out, equity stays at cash level
+
+    The function adds boundary rows so that:
+    - Entry price is correctly set to period start price (not first signal's price)
+    - Final equity reflects the period end price
+
+    Args:
+        signals_df: DataFrame with BUY/SELL signals (date, price, action columns)
+        start_price: Price at start of period (we start invested here)
+        end_price: Price at end of period (for final equity calculation)
+        start_date: Start date of period
+        end_date: End date of period
+        date_col: Name of date column (default 'date')
+        price_col: Name of price column (default 'price')
+        signal_col: Name of signal column (default 'action')
+
+    Returns:
+        BacktestResult with metrics, baseline comparison, and equity curves
+
+    Example:
+        # Predictions only have BUY/SELL rows
+        signals = pd.DataFrame({
+            'date': ['2024-01-15', '2024-02-01'],
+            'price': [110, 95],
+            'action': ['SELL', 'BUY']
+        })
+
+        # Run backtest with period boundaries
+        result = run_backtest_with_boundaries(
+            signals_df=signals,
+            start_price=100, end_price=105,
+            start_date='2024-01-01', end_date='2024-03-01'
+        )
+
+        # Result includes:
+        # - Strategy return (started at 100, sold at 110, bought at 95, ended at 105)
+        # - B&H return (100 -> 105 = 5%)
+        # - Outperformance
+    """
+    empty_metrics = BacktestMetrics(
+        total_return=0.0, cagr=0.0, sharpe_ratio=0.0, sortino_ratio=0.0,
+        max_drawdown=0.0, volatility=0.0, win_rate=0.0, daily_win_rate=0.0,
+        monthly_win_rate=0.0, num_trades=0, avg_trade_return=0.0,
+        total_signals=0, buy_signals=0, sell_signals=0, hold_signals=0
+    )
+    empty_baseline = BaselineComparison(
+        strategy_return=0.0, buy_hold_return=0.0,
+        outperformance=0.0, outperformance_pct=0.0
+    )
+
+    # Validate inputs
+    if start_price <= 0 or end_price <= 0:
+        return BacktestResult(metrics=empty_metrics, baseline=empty_baseline, equity_curve=[])
+
+    # Calculate B&H return from period boundaries
+    buy_hold_return = (end_price / start_price) - 1
+
+    # Handle empty signals - just return B&H (stayed invested whole period)
+    if signals_df is None or signals_df.empty:
+        baseline = BaselineComparison(
+            strategy_return=buy_hold_return,
+            buy_hold_return=buy_hold_return,
+            outperformance=0.0,
+            outperformance_pct=0.0
+        )
+        return BacktestResult(metrics=empty_metrics, baseline=baseline, equity_curve=[])
+
+    # Build backtest data with boundaries
+    df = signals_df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+
+    # Create boundary rows (HOLD = stay in current position)
+    start_row = pd.DataFrame({
+        date_col: [pd.to_datetime(start_date)],
+        price_col: [float(start_price)],
+        signal_col: ['HOLD']
+    })
+    end_row = pd.DataFrame({
+        date_col: [pd.to_datetime(end_date)],
+        price_col: [float(end_price)],
+        signal_col: ['HOLD']
+    })
+
+    # Combine: start + signals + end
+    backtest_df = pd.concat([start_row, df, end_row], ignore_index=True)
+
+    # Remove duplicates (keep signal if on same date as boundary)
+    backtest_df = backtest_df.drop_duplicates(subset=date_col, keep='last')
+    backtest_df = backtest_df.sort_values(date_col).reset_index(drop=True)
+
+    # Run standard backtest
+    metrics = run_backtest(backtest_df, date_col, price_col, signal_col)
+
+    # Calculate baseline comparison
+    strategy_return = metrics.total_return
+    outperformance = strategy_return - buy_hold_return
+    outperformance_pct = ((1 + strategy_return) / (1 + buy_hold_return) - 1) * 100 if buy_hold_return != -1 else 0
+
+    baseline = BaselineComparison(
+        strategy_return=strategy_return,
+        buy_hold_return=buy_hold_return,
+        outperformance=outperformance,
+        outperformance_pct=outperformance_pct
+    )
+
+    # Build equity curve
+    _, strategy_equity_norm = simulate_trades(backtest_df, date_col, price_col, signal_col)
+    baseline_equity = calculate_baseline_equity(backtest_df[price_col], 10000.0)
+    strategy_equity = [e * 10000.0 for e in strategy_equity_norm]
+
+    equity_curve = []
+    for i in range(len(backtest_df)):
+        equity_curve.append({
+            "date": str(backtest_df.iloc[i][date_col]),
+            "strategy": float(strategy_equity[i]) if i < len(strategy_equity) else float(strategy_equity[-1]),
+            "baseline": float(baseline_equity.iloc[i]) if i < len(baseline_equity) else float(baseline_equity.iloc[-1]),
+        })
+
+    return BacktestResult(
+        metrics=metrics,
+        baseline=baseline,
+        equity_curve=equity_curve
+    )
+
+
 def metrics_to_dict(metrics: BacktestMetrics) -> Dict:
     """Convert BacktestMetrics to dict for JSON serialization."""
     return {

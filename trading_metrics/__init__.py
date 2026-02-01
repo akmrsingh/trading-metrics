@@ -41,6 +41,7 @@ from .metrics import (
     # High-level backtest
     run_backtest,
     run_backtest_with_curves,
+    run_backtest_with_boundaries,
     BacktestMetrics,
     BacktestResult,
     Trade,
@@ -75,6 +76,7 @@ __all__ = [
     "StrategySimulationResult",
     "run_backtest",
     "run_backtest_with_curves",
+    "run_backtest_with_boundaries",
     "BacktestMetrics",
     "BacktestResult",
     "Trade",
