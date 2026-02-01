@@ -12,6 +12,8 @@ Usage:
     max_dd = calculate_max_drawdown(returns_series)
 """
 
+from . import backfill_db
+
 from .metrics import (
     # Core metric calculations
     calculate_sharpe_ratio,
@@ -57,6 +59,7 @@ from .metrics import (
 
 __version__ = "0.1.0"
 __all__ = [
+    "backfill_db",
     "calculate_sharpe_ratio",
     "calculate_sortino_ratio",
     "calculate_max_drawdown",
