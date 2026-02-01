@@ -846,16 +846,29 @@ def metrics_to_dict(metrics: BacktestMetrics) -> Dict:
 # Baseline Comparison Functions
 # =============================================================================
 
-def calculate_buy_hold_return(prices: pd.Series) -> float:
+def calculate_buy_hold_return(prices: pd.Series = None, *, start_price: float = None, end_price: float = None) -> float:
     """
-    Calculate buy-and-hold return from price series.
+    Calculate buy-and-hold return.
+
+    Can be called two ways:
+    1. With a price series: calculate_buy_hold_return(prices)
+    2. With start/end prices: calculate_buy_hold_return(start_price=100, end_price=120)
 
     Args:
         prices: Series of prices (first value = entry, last value = exit)
+        start_price: Starting price (keyword-only)
+        end_price: Ending price (keyword-only)
 
     Returns:
         Total return as decimal (e.g., 0.25 for 25%)
     """
+    # If start_price and end_price provided, use them directly
+    if start_price is not None and end_price is not None:
+        if start_price <= 0:
+            return 0.0
+        return float((end_price / start_price) - 1)
+
+    # Otherwise use price series
     if prices is None or len(prices) < 2:
         return 0.0
     return float((prices.iloc[-1] / prices.iloc[0]) - 1)
