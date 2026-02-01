@@ -91,13 +91,13 @@ DEFAULT_SETTINGS = {
 
 
 def init_backfill_tables():
-    """Create backfill tables if they don't exist."""
+    """Create backfill tables if they don't exist. Uses single atomic transaction."""
     if not is_configured():
         return False
 
     with _engine.connect() as conn:
+        # All operations in single transaction
         conn.execute(text(BACKFILL_SCHEMA_SQL))
-        conn.commit()
 
         # Insert default settings if not present
         for key, value in DEFAULT_SETTINGS.items():
@@ -106,7 +106,9 @@ def init_backfill_tables():
                 VALUES (:key, :value)
                 ON CONFLICT (key) DO NOTHING
             """), {'key': key, 'value': value})
-            conn.commit()
+
+        # Single commit at end - atomic
+        conn.commit()
 
     return True
 
@@ -291,9 +293,25 @@ def create_job(
 
     Returns:
         Job ID if created, None if failed or duplicate
+
+    Raises:
+        ValueError: If validation fails (invalid job_type, dates, etc.)
     """
     if not is_configured():
         return None
+
+    # Validation
+    if job_type not in ('prices', 'predictions'):
+        raise ValueError(f"Invalid job_type: {job_type}. Must be 'prices' or 'predictions'")
+
+    if not symbol or not symbol.strip():
+        raise ValueError("Symbol cannot be empty")
+
+    if start_date > end_date:
+        raise ValueError(f"start_date ({start_date}) cannot be after end_date ({end_date})")
+
+    if priority < 0:
+        raise ValueError(f"Priority must be non-negative, got {priority}")
 
     # Calculate total trading days (weekdays)
     total_days = 0
@@ -509,65 +527,79 @@ def reorder_priority(job_id: int, new_priority: int) -> bool:
 
 
 def move_job_up(job_id: int) -> bool:
-    """Move a job up in priority (decrease priority number)."""
-    job = get_job(job_id)
-    if not job or job['status'] not in ('pending', 'paused'):
-        return False
-
-    # Get the job above this one
-    with _engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT id, priority FROM backfill_jobs
-            WHERE status IN ('pending', 'paused')
-              AND (priority < :priority OR (priority = :priority AND created_at < :created_at))
-            ORDER BY priority DESC, created_at DESC
-            LIMIT 1
-        """), {'priority': job['priority'], 'created_at': job['created_at']})
-        above = result.fetchone()
-
-        if above:
-            # Swap priorities
-            conn.execute(text("""
-                UPDATE backfill_jobs SET priority = :new_priority WHERE id = :id
-            """), {'id': job_id, 'new_priority': above[1]})
-            conn.execute(text("""
-                UPDATE backfill_jobs SET priority = :new_priority WHERE id = :id
-            """), {'id': above[0], 'new_priority': job['priority']})
-            conn.commit()
-            return True
-
-    return False
+    """Move a job up in priority (decrease priority number). Atomic with row locking."""
+    return _move_job(job_id, direction='up')
 
 
 def move_job_down(job_id: int) -> bool:
-    """Move a job down in priority (increase priority number)."""
-    job = get_job(job_id)
-    if not job or job['status'] not in ('pending', 'paused'):
+    """Move a job down in priority (increase priority number). Atomic with row locking."""
+    return _move_job(job_id, direction='down')
+
+
+def _move_job(job_id: int, direction: str) -> bool:
+    """
+    Atomically move a job up or down in priority.
+
+    Uses FOR UPDATE locking to prevent race conditions.
+    Swaps priority with adjacent job in single transaction.
+    """
+    if not is_configured():
         return False
 
-    # Get the job below this one
     with _engine.connect() as conn:
-        result = conn.execute(text("""
-            SELECT id, priority FROM backfill_jobs
-            WHERE status IN ('pending', 'paused')
-              AND (priority > :priority OR (priority = :priority AND created_at > :created_at))
-            ORDER BY priority ASC, created_at ASC
-            LIMIT 1
-        """), {'priority': job['priority'], 'created_at': job['created_at']})
-        below = result.fetchone()
+        # Lock and fetch the job we want to move
+        job_result = conn.execute(text("""
+            SELECT id, priority, created_at, status FROM backfill_jobs
+            WHERE id = :id
+            FOR UPDATE
+        """), {'id': job_id})
+        job = job_result.fetchone()
 
-        if below:
-            # Swap priorities
+        if not job or job[3] not in ('pending', 'paused'):
+            return False
+
+        job_priority = job[1]
+        job_created_at = job[2]
+
+        # Find adjacent job based on direction (also lock it)
+        if direction == 'up':
+            adjacent_result = conn.execute(text("""
+                SELECT id, priority FROM backfill_jobs
+                WHERE status IN ('pending', 'paused')
+                  AND (priority < :priority OR (priority = :priority AND created_at < :created_at))
+                ORDER BY priority DESC, created_at DESC
+                LIMIT 1
+                FOR UPDATE
+            """), {'priority': job_priority, 'created_at': job_created_at})
+        else:  # down
+            adjacent_result = conn.execute(text("""
+                SELECT id, priority FROM backfill_jobs
+                WHERE status IN ('pending', 'paused')
+                  AND (priority > :priority OR (priority = :priority AND created_at > :created_at))
+                ORDER BY priority ASC, created_at ASC
+                LIMIT 1
+                FOR UPDATE
+            """), {'priority': job_priority, 'created_at': job_created_at})
+
+        adjacent = adjacent_result.fetchone()
+
+        if adjacent:
+            adjacent_id = adjacent[0]
+            adjacent_priority = adjacent[1]
+
+            # Swap priorities atomically
             conn.execute(text("""
                 UPDATE backfill_jobs SET priority = :new_priority WHERE id = :id
-            """), {'id': job_id, 'new_priority': below[1]})
+            """), {'id': job_id, 'new_priority': adjacent_priority})
             conn.execute(text("""
                 UPDATE backfill_jobs SET priority = :new_priority WHERE id = :id
-            """), {'id': below[0], 'new_priority': job['priority']})
+            """), {'id': adjacent_id, 'new_priority': job_priority})
+
             conn.commit()
             return True
 
-    return False
+        # No adjacent job found
+        return False
 
 
 def increment_retry(job_id: int) -> int:
@@ -592,13 +624,18 @@ def cleanup_old_jobs(days: int = 7) -> int:
     if not is_configured():
         return 0
 
+    # Validate days parameter
+    if not isinstance(days, int) or days < 0:
+        raise ValueError(f"days must be a non-negative integer, got {days}")
+
     with _engine.connect() as conn:
-        result = conn.execute(text(f"""
+        # Use parameter binding with interval arithmetic (not string interpolation)
+        result = conn.execute(text("""
             DELETE FROM backfill_jobs
             WHERE status IN ('completed', 'failed')
-              AND completed_at < NOW() - INTERVAL '{days} days'
+              AND completed_at < NOW() - (interval '1 day' * :days)
             RETURNING id
-        """))
+        """), {'days': days})
         conn.commit()
         return len(result.fetchall())
 
