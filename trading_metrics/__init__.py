@@ -26,6 +26,10 @@ from .strategies import (
 )
 
 from .metrics import (
+    # Errors - raise these instead of returning empty results
+    InsufficientDataError,
+    InvalidDataError,
+
     # Core metric calculations
     calculate_sharpe_ratio,
     calculate_sortino_ratio,
@@ -62,6 +66,10 @@ from .metrics import (
 
 __version__ = "0.1.0"
 __all__ = [
+    # Errors
+    "InsufficientDataError",
+    "InvalidDataError",
+    # Modules
     "backfill_db",
     "strategies",
     "generate_signals",

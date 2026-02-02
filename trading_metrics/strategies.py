@@ -21,6 +21,8 @@ import numpy as np
 from typing import Dict, List, Optional, Callable, Tuple
 from dataclasses import dataclass
 
+from .metrics import InsufficientDataError, InvalidDataError
+
 
 def prepare_indicators(
     df: pd.DataFrame,
@@ -180,7 +182,24 @@ def generate_signals(
     Returns:
         DataFrame with columns: date, action, price, reason, symbol
         Only contains BUY and SELL rows (no HOLD)
+
+    Raises:
+        InsufficientDataError: If prices_df is empty or too short
+        InvalidDataError: If required columns are missing or contain invalid values
     """
+    # Validate inputs
+    if prices_df is None:
+        raise InsufficientDataError("prices_df is required but was None")
+    if prices_df.empty:
+        raise InsufficientDataError("prices_df is empty - no price data provided")
+    if price_col not in prices_df.columns:
+        raise InvalidDataError(f"price column '{price_col}' not found in prices_df. Available: {list(prices_df.columns)}")
+    if date_col not in prices_df.columns:
+        raise InvalidDataError(f"date column '{date_col}' not found in prices_df. Available: {list(prices_df.columns)}")
+    if prices_df[price_col].isna().any():
+        nan_count = prices_df[price_col].isna().sum()
+        raise InvalidDataError(f"prices_df contains {nan_count} NaN price value(s) in '{price_col}' column")
+
     if model_type in ("stoploss", "dip_buyer", "custom"):
         return _generate_stoploss_signals(config, prices_df, symbol, date_col, price_col, high_col)
     elif model_type == "momentum":

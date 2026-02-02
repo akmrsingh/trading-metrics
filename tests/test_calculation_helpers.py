@@ -852,17 +852,15 @@ class TestRunBacktest:
         assert result.equity_curve[0]['strategy'] == pytest.approx(5000, rel=0.01)
         assert result.equity_curve[0]['baseline'] == pytest.approx(5000, rel=0.01)
 
-    def test_empty_prices_returns_empty_result(self):
-        """Empty prices should return empty result."""
-        from trading_metrics import run_backtest
+    def test_empty_prices_raises_error(self):
+        """Empty prices should raise InsufficientDataError."""
+        from trading_metrics import run_backtest, InsufficientDataError
 
         prices_df = pd.DataFrame({'date': [], 'price': []})
         signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        result = run_backtest(signals_df, prices_df, 'date', 'price')
-
-        assert result.metrics.total_return == 0.0
-        assert result.equity_curve == []
+        with pytest.raises(InsufficientDataError, match="prices_df is empty"):
+            run_backtest(signals_df, prices_df, 'date', 'price')
 
     def test_baseline_comparison_included(self):
         """Should include baseline comparison."""

@@ -393,20 +393,18 @@ class TestRunBacktest:
         assert result.metrics.num_trades == 2
 
     def test_run_backtest_empty_prices(self):
-        """Should handle empty prices gracefully."""
-        from trading_metrics import run_backtest
+        """Should raise InsufficientDataError for empty prices."""
+        from trading_metrics import run_backtest, InsufficientDataError
 
         prices_df = pd.DataFrame({'date': [], 'price': []})
         signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        result = run_backtest(signals_df, prices_df, 'date', 'price')
-
-        assert result.metrics.total_return == 0.0
-        assert result.metrics.num_trades == 0
+        with pytest.raises(InsufficientDataError, match="prices_df is empty"):
+            run_backtest(signals_df, prices_df, 'date', 'price')
 
     def test_run_backtest_single_price(self):
-        """Should handle single price gracefully."""
-        from trading_metrics import run_backtest
+        """Should raise InsufficientDataError for single price."""
+        from trading_metrics import run_backtest, InsufficientDataError
 
         prices_df = pd.DataFrame({
             'date': ['2024-01-01'],
@@ -414,9 +412,8 @@ class TestRunBacktest:
         })
         signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        result = run_backtest(signals_df, prices_df, 'date', 'price')
-
-        assert result.metrics.total_return == 0.0
+        with pytest.raises(InsufficientDataError, match="need at least 2"):
+            run_backtest(signals_df, prices_df, 'date', 'price')
 
     def test_run_backtest_equity_curve(self):
         """Should return equity curve with daily values."""

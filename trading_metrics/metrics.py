@@ -15,6 +15,16 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+
+class InsufficientDataError(ValueError):
+    """Raised when there's not enough data to calculate metrics."""
+    pass
+
+
+class InvalidDataError(ValueError):
+    """Raised when input data is invalid (NaN prices, negative values, etc.)."""
+    pass
+
 # Use quantstats for validated calculations
 try:
     import quantstats as qs
@@ -763,13 +773,26 @@ def run_backtest(
 
         result = run_backtest(signals, prices)
     """
-    # Validate prices
-    if prices_df is None or prices_df.empty or len(prices_df) < 2:
-        return _empty_result()
+    # Validate prices - raise clear errors instead of returning empty results
+    if prices_df is None:
+        raise InsufficientDataError("prices_df is required but was None")
+    if prices_df.empty:
+        raise InsufficientDataError("prices_df is empty - no price data provided")
+    if len(prices_df) < 2:
+        raise InsufficientDataError(f"prices_df has only {len(prices_df)} row(s) - need at least 2 for return calculation")
+    if price_col not in prices_df.columns:
+        raise InvalidDataError(f"price column '{price_col}' not found in prices_df. Available: {list(prices_df.columns)}")
+    if date_col not in prices_df.columns:
+        raise InvalidDataError(f"date column '{date_col}' not found in prices_df. Available: {list(prices_df.columns)}")
 
     prices = prices_df.copy()
     prices[date_col] = pd.to_datetime(prices[date_col])
     prices = prices.sort_values(date_col).reset_index(drop=True)
+
+    # Validate price values
+    if prices[price_col].isna().any():
+        nan_count = prices[price_col].isna().sum()
+        raise InvalidDataError(f"prices_df contains {nan_count} NaN price value(s) - clean data before backtest")
 
     # Get boundaries from prices
     start_price = float(prices[price_col].iloc[0])
@@ -777,8 +800,10 @@ def run_backtest(
     start_date = prices[date_col].iloc[0]
     end_date = prices[date_col].iloc[-1]
 
-    if start_price <= 0 or end_price <= 0:
-        return _empty_result()
+    if start_price <= 0:
+        raise InvalidDataError(f"start price is {start_price} - prices must be positive")
+    if end_price <= 0:
+        raise InvalidDataError(f"end price is {end_price} - prices must be positive")
 
     # Calculate B&H return from price boundaries
     buy_hold_return = (end_price / start_price) - 1
