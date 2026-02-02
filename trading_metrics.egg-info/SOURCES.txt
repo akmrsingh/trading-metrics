@@ -1,6 +1,7 @@
 README.md
 pyproject.toml
 tests/__init__.py
+tests/test_calculation_helpers.py
 tests/test_metrics.py
 tests/test_strategies.py
 trading_metrics/__init__.py
