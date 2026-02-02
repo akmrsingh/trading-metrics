@@ -7,10 +7,13 @@ Fallback to manual calculations if quantstats unavailable.
 
 IMPORTANT: All projects should use these functions for consistency.
 """
+import logging
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # Use quantstats for validated calculations
 try:
@@ -68,15 +71,31 @@ class BacktestMetrics:
     sortino_ratio: float
     max_drawdown: float
     volatility: float
-    win_rate: float  # Trade-based
-    daily_win_rate: float
-    monthly_win_rate: float
+    win_rate: float  # Trade-based win rate
     num_trades: int
     avg_trade_return: float
     total_signals: int
     buy_signals: int
     sell_signals: int
     hold_signals: int
+
+    def to_dict(self) -> Dict:
+        """Convert to dict for JSON serialization."""
+        return {
+            'total_return': self.total_return,
+            'cagr': self.cagr,
+            'sharpe_ratio': self.sharpe_ratio,
+            'sortino_ratio': self.sortino_ratio,
+            'max_drawdown': self.max_drawdown,
+            'volatility': self.volatility,
+            'win_rate': self.win_rate,
+            'num_trades': self.num_trades,
+            'avg_trade_return': self.avg_trade_return,
+            'total_predictions': self.total_signals,
+            'buy_signals': self.buy_signals,
+            'sell_signals': self.sell_signals,
+            'hold_signals': self.hold_signals
+        }
 
 
 @dataclass
@@ -141,8 +160,8 @@ def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.0, peri
         try:
             result = qs.stats.sharpe(returns, rf=risk_free_rate, periods=periods)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats sharpe failed, using fallback: {e}")
 
     # Fallback: manual calculation
     excess_returns = returns - risk_free_rate / periods
@@ -172,8 +191,8 @@ def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.0, per
         try:
             result = qs.stats.sortino(returns, rf=risk_free_rate, periods=periods)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats sortino failed, using fallback: {e}")
 
     # Fallback: manual calculation
     excess_returns = returns - risk_free_rate / periods
@@ -204,8 +223,8 @@ def calculate_max_drawdown(returns: pd.Series) -> float:
         try:
             result = qs.stats.max_drawdown(returns)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats max_drawdown failed, using fallback: {e}")
 
     # Fallback: manual calculation
     cum_returns = (1 + returns).cumprod()
@@ -237,8 +256,8 @@ def calculate_total_return(returns: pd.Series) -> float:
         try:
             result = qs.stats.comp(returns)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats comp failed, using fallback: {e}")
 
     # Fallback: manual calculation
     return float((1 + returns).prod() - 1)
@@ -266,8 +285,8 @@ def calculate_cagr(returns: pd.Series, periods: int = 252) -> float:
         try:
             result = qs.stats.cagr(returns, periods=periods)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats cagr failed, using fallback: {e}")
 
     # Fallback: manual calculation
     total_return = (1 + returns).prod()
@@ -299,8 +318,8 @@ def calculate_volatility(returns: pd.Series, periods: int = 252) -> float:
         try:
             result = qs.stats.volatility(returns, periods=periods)
             return float(result) if not pd.isna(result) else 0.0
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"quantstats volatility failed, using fallback: {e}")
 
     # Fallback: manual calculation
     return float(returns.std() * np.sqrt(periods))
@@ -327,68 +346,6 @@ def calculate_trade_win_rate(trades: List[Trade]) -> float:
     return winners / len(trades)
 
 
-def calculate_daily_win_rate(returns: pd.Series) -> float:
-    """
-    Calculate win rate from daily returns.
-
-    Args:
-        returns: Series of daily returns
-
-    Returns:
-        Win rate as decimal (% of days with positive returns)
-    """
-    if returns is None or len(returns) == 0:
-        return 0.0
-
-    returns = returns.dropna()
-    non_zero_returns = returns[returns != 0]
-
-    if len(non_zero_returns) == 0:
-        return 0.0
-
-    winning_days = (non_zero_returns > 0).sum()
-    return float(winning_days / len(non_zero_returns))
-
-
-def calculate_monthly_win_rate(returns: pd.Series, dates: Optional[pd.Series] = None) -> float:
-    """
-    Calculate win rate from monthly returns.
-
-    Args:
-        returns: Series of daily returns
-        dates: Optional date index (if returns doesn't have datetime index)
-
-    Returns:
-        Win rate as decimal (% of months with positive returns)
-    """
-    if returns is None or len(returns) == 0:
-        return 0.0
-
-    returns = returns.dropna()
-    if len(returns) == 0:
-        return 0.0
-
-    # Try to get monthly returns
-    try:
-        if dates is not None:
-            df = pd.DataFrame({'date': dates, 'return': returns})
-            df['month'] = pd.to_datetime(df['date']).dt.to_period('M')
-            monthly = df.groupby('month')['return'].apply(lambda x: (1 + x).prod() - 1)
-        elif hasattr(returns.index, 'to_period'):
-            monthly = returns.groupby(returns.index.to_period('M')).apply(lambda x: (1 + x).prod() - 1)
-        else:
-            # Can't determine monthly, fall back to daily
-            return calculate_daily_win_rate(returns)
-
-        if len(monthly) == 0:
-            return 0.0
-
-        positive_months = (monthly > 0).sum()
-        return float(positive_months / len(monthly))
-    except Exception:
-        return calculate_daily_win_rate(returns)
-
-
 def calculate_avg_trade_return(trades: List[Trade]) -> float:
     """
     Calculate average return per trade.
@@ -409,14 +366,14 @@ def calculate_avg_trade_return(trades: List[Trade]) -> float:
 # Trade Simulation
 # =============================================================================
 
-def simulate_trades(
+def _simulate_from_signals(
     df: pd.DataFrame,
     date_col: str = 'date',
     price_col: str = 'price',
     signal_col: str = 'action'
 ) -> Tuple[List[Trade], pd.Series]:
     """
-    Simulate trades from BUY/SELL signals.
+    Internal: Simulate trades from BUY/SELL signals.
 
     PARADIGM: Start 100% INVESTED (baseline = buy-and-hold)
         - SELL: Exit position (go to cash)
@@ -662,69 +619,87 @@ def simulate_strategy_from_invested(
 # High-Level Backtest
 # =============================================================================
 
-def run_backtest(
+def _empty_metrics() -> BacktestMetrics:
+    """Create empty BacktestMetrics with all zeros."""
+    return BacktestMetrics(
+        total_return=0.0, cagr=0.0, sharpe_ratio=0.0, sortino_ratio=0.0,
+        max_drawdown=0.0, volatility=0.0, win_rate=0.0,
+        num_trades=0, avg_trade_return=0.0,
+        total_signals=0, buy_signals=0, sell_signals=0, hold_signals=0
+    )
+
+
+def _empty_baseline() -> BaselineComparison:
+    """Create empty BaselineComparison with all zeros."""
+    return BaselineComparison(
+        strategy_return=0.0, buy_hold_return=0.0,
+        outperformance=0.0, outperformance_pct=0.0
+    )
+
+
+def _empty_result() -> BacktestResult:
+    """Create empty BacktestResult."""
+    return BacktestResult(
+        metrics=_empty_metrics(),
+        baseline=_empty_baseline(),
+        equity_curve=[]
+    )
+
+
+def _build_equity_curve(
+    df: pd.DataFrame,
+    strategy_equity: List[float],
+    baseline_equity: pd.Series,
+    date_col: str
+) -> List[Dict]:
+    """Build equity curve for frontend dual-line chart."""
+    equity_curve = []
+    for i in range(len(df)):
+        equity_curve.append({
+            "date": str(df.iloc[i][date_col]),
+            "strategy": float(strategy_equity[i]) if i < len(strategy_equity) else float(strategy_equity[-1]),
+            "baseline": float(baseline_equity.iloc[i]) if i < len(baseline_equity) else float(baseline_equity.iloc[-1]),
+        })
+    return equity_curve
+
+
+def _run_backtest_internal(
     df: pd.DataFrame,
     date_col: str = 'date',
     price_col: str = 'price',
     signal_col: str = 'action'
-) -> BacktestMetrics:
+) -> Tuple[BacktestMetrics, List[Trade], pd.Series]:
     """
-    Run complete backtest and return all metrics.
+    Internal backtest that returns metrics, trades, and equity.
 
-    This is the main entry point for backtesting.
-
-    Args:
-        df: DataFrame with date, price, signal columns
-        date_col: Name of date column
-        price_col: Name of price column
-        signal_col: Name of signal column ('BUY', 'SELL', 'HOLD')
-
-    Returns:
-        BacktestMetrics with all performance metrics
+    Used by public functions to avoid duplicate simulation.
     """
-    empty_result = BacktestMetrics(
-        total_return=0.0,
-        cagr=0.0,
-        sharpe_ratio=0.0,
-        sortino_ratio=0.0,
-        max_drawdown=0.0,
-        volatility=0.0,
-        win_rate=0.0,
-        daily_win_rate=0.0,
-        monthly_win_rate=0.0,
-        num_trades=0,
-        avg_trade_return=0.0,
-        total_signals=0,
-        buy_signals=0,
-        sell_signals=0,
-        hold_signals=0
-    )
-
     if df.empty:
-        return empty_result
+        return _empty_metrics(), [], pd.Series([1.0])
 
     # Count signals
     buy_signals = int((df[signal_col] == 'BUY').sum())
     sell_signals = int((df[signal_col] == 'SELL').sum())
     hold_signals = int((df[signal_col] == 'HOLD').sum())
 
-    # Simulate trades
-    trades, equity = simulate_trades(df, date_col, price_col, signal_col)
+    # Simulate trades (only done ONCE)
+    trades, equity = _simulate_from_signals(df, date_col, price_col, signal_col)
 
     # Calculate returns from equity curve
     returns = equity.pct_change().dropna()
 
     if len(returns) == 0:
-        empty_result.total_signals = len(df)
-        empty_result.buy_signals = buy_signals
-        empty_result.sell_signals = sell_signals
-        empty_result.hold_signals = hold_signals
-        return empty_result
+        metrics = _empty_metrics()
+        metrics.total_signals = len(df)
+        metrics.buy_signals = buy_signals
+        metrics.sell_signals = sell_signals
+        metrics.hold_signals = hold_signals
+        return metrics, trades, equity
 
     # Get dates for monthly calculation
     dates = df[date_col] if date_col in df.columns else None
 
-    return BacktestMetrics(
+    metrics = BacktestMetrics(
         total_return=calculate_total_return(returns),
         cagr=calculate_cagr(returns),
         sharpe_ratio=calculate_sharpe_ratio(returns),
@@ -732,8 +707,6 @@ def run_backtest(
         max_drawdown=calculate_max_drawdown(returns),
         volatility=calculate_volatility(returns),
         win_rate=calculate_trade_win_rate(trades),
-        daily_win_rate=calculate_daily_win_rate(returns),
-        monthly_win_rate=calculate_monthly_win_rate(returns, dates),
         num_trades=len(trades),
         avg_trade_return=calculate_avg_trade_return(trades),
         total_signals=len(df),
@@ -742,198 +715,175 @@ def run_backtest(
         hold_signals=hold_signals
     )
 
+    return metrics, trades, equity
 
-def run_backtest_with_curves(
-    df: pd.DataFrame,
-    date_col: str = 'date',
-    price_col: str = 'price',
+
+def run_backtest(
+    signals_df: pd.DataFrame,
+    prices_df: pd.DataFrame,
+    date_col: str,
+    price_col: str,
     signal_col: str = 'action',
     initial_equity: float = 10000.0
 ) -> BacktestResult:
     """
-    Run complete backtest and return metrics, equity curves, and baseline comparison.
-
-    This is the STANDARD function for all model/strategy evaluations.
-    Returns everything needed for UI display including dual-line charts.
-
-    PARADIGM: Start 100% invested (baseline = buy-and-hold)
-        - SELL: Exit position
-        - BUY: Re-enter position
-        - HOLD: Stay in current state
-
-    Args:
-        df: DataFrame with date, price, signal columns
-        date_col: Name of date column
-        price_col: Name of price column
-        signal_col: Name of signal column ('BUY', 'SELL', 'HOLD')
-        initial_equity: Starting equity value for curves (default 10000)
-
-    Returns:
-        BacktestResult with metrics, baseline comparison, and equity curves
-    """
-    empty_metrics = BacktestMetrics(
-        total_return=0.0, cagr=0.0, sharpe_ratio=0.0, sortino_ratio=0.0,
-        max_drawdown=0.0, volatility=0.0, win_rate=0.0, daily_win_rate=0.0,
-        monthly_win_rate=0.0, num_trades=0, avg_trade_return=0.0,
-        total_signals=0, buy_signals=0, sell_signals=0, hold_signals=0
-    )
-    empty_baseline = BaselineComparison(
-        strategy_return=0.0, buy_hold_return=0.0,
-        outperformance=0.0, outperformance_pct=0.0
-    )
-
-    if df.empty or len(df) < 2:
-        return BacktestResult(
-            metrics=empty_metrics,
-            baseline=empty_baseline,
-            equity_curve=[]
-        )
-
-    # Get standard metrics
-    metrics = run_backtest(df, date_col, price_col, signal_col)
-
-    # Simulate trades to get strategy equity (normalized, starts at 1.0)
-    _, strategy_equity_norm = simulate_trades(df, date_col, price_col, signal_col)
-
-    # Calculate baseline (buy-and-hold) equity
-    baseline_equity = calculate_baseline_equity(df[price_col], initial_equity)
-
-    # Scale strategy equity to same initial value
-    strategy_equity = [e * initial_equity for e in strategy_equity_norm]
-
-    # Build equity curve for frontend (dual-line chart)
-    equity_curve = []
-    for i in range(len(df)):
-        equity_curve.append({
-            "date": str(df.iloc[i][date_col]),
-            "strategy": float(strategy_equity[i]) if i < len(strategy_equity) else float(strategy_equity[-1]),
-            "baseline": float(baseline_equity.iloc[i]) if i < len(baseline_equity) else float(baseline_equity.iloc[-1]),
-        })
-
-    # Calculate baseline comparison
-    buy_hold_return = calculate_buy_hold_return(df[price_col])
-    baseline = compare_to_baseline(metrics.total_return, df[price_col])
-
-    return BacktestResult(
-        metrics=metrics,
-        baseline=baseline,
-        equity_curve=equity_curve
-    )
-
-
-def run_backtest_with_boundaries(
-    signals_df: pd.DataFrame,
-    start_price: float,
-    end_price: float,
-    start_date,
-    end_date,
-    date_col: str = 'date',
-    price_col: str = 'price',
-    signal_col: str = 'action'
-) -> BacktestResult:
-    """
-    Run backtest on sparse BUY/SELL signals with explicit period boundaries.
-
-    This is the STANDARD function for backtesting prediction signals.
-    Handles the common case where you have:
-    - Sparse BUY/SELL signals (not daily data)
-    - Known start/end prices for the period
+    Run backtest on sparse BUY/SELL signals with price data for equity curves.
 
     PARADIGM: Start 100% invested
         - SELL: Exit position (go to cash)
         - BUY: Re-enter position
         - If period ends while out, equity stays at cash level
 
-    The function adds boundary rows so that:
-    - Entry price is correctly set to period start price (not first signal's price)
-    - Final equity reflects the period end price
-
     Args:
-        signals_df: DataFrame with BUY/SELL signals (date, price, action columns)
-        start_price: Price at start of period (we start invested here)
-        end_price: Price at end of period (for final equity calculation)
-        start_date: Start date of period
-        end_date: End date of period
+        signals_df: DataFrame with sparse BUY/SELL signals (date, price, action)
+                    From predictions table. Can be empty (= stayed invested).
+        prices_df: DataFrame with daily prices for the period (date, close)
+                   From raw_prices table. Used for equity curves and B&H calc.
         date_col: Name of date column (default 'date')
-        price_col: Name of price column (default 'price')
+        price_col: Name of price column (default 'close')
         signal_col: Name of signal column (default 'action')
+        initial_equity: Starting equity value for curves (default 10000)
 
     Returns:
         BacktestResult with metrics, baseline comparison, and equity curves
 
     Example:
-        # Predictions only have BUY/SELL rows
+        # Sparse signals from predictions table
         signals = pd.DataFrame({
             'date': ['2024-01-15', '2024-02-01'],
-            'price': [110, 95],
+            'close': [110, 95],
             'action': ['SELL', 'BUY']
         })
 
-        # Run backtest with period boundaries
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=100, end_price=105,
-            start_date='2024-01-01', end_date='2024-03-01'
-        )
+        # Daily prices from raw_prices table
+        prices = pd.DataFrame({
+            'date': pd.date_range('2024-01-01', '2024-03-01'),
+            'close': [100, 101, 102, ...]  # daily prices
+        })
 
-        # Result includes:
-        # - Strategy return (started at 100, sold at 110, bought at 95, ended at 105)
-        # - B&H return (100 -> 105 = 5%)
-        # - Outperformance
+        result = run_backtest(signals, prices)
     """
-    empty_metrics = BacktestMetrics(
-        total_return=0.0, cagr=0.0, sharpe_ratio=0.0, sortino_ratio=0.0,
-        max_drawdown=0.0, volatility=0.0, win_rate=0.0, daily_win_rate=0.0,
-        monthly_win_rate=0.0, num_trades=0, avg_trade_return=0.0,
-        total_signals=0, buy_signals=0, sell_signals=0, hold_signals=0
-    )
-    empty_baseline = BaselineComparison(
-        strategy_return=0.0, buy_hold_return=0.0,
-        outperformance=0.0, outperformance_pct=0.0
-    )
+    # Validate prices
+    if prices_df is None or prices_df.empty or len(prices_df) < 2:
+        return _empty_result()
 
-    # Validate inputs
+    prices = prices_df.copy()
+    prices[date_col] = pd.to_datetime(prices[date_col])
+    prices = prices.sort_values(date_col).reset_index(drop=True)
+
+    # Get boundaries from prices
+    start_price = float(prices[price_col].iloc[0])
+    end_price = float(prices[price_col].iloc[-1])
+    start_date = prices[date_col].iloc[0]
+    end_date = prices[date_col].iloc[-1]
+
     if start_price <= 0 or end_price <= 0:
-        return BacktestResult(metrics=empty_metrics, baseline=empty_baseline, equity_curve=[])
+        return _empty_result()
 
-    # Calculate B&H return from period boundaries
+    # Calculate B&H return from price boundaries
     buy_hold_return = (end_price / start_price) - 1
 
     # Handle empty signals - just return B&H (stayed invested whole period)
     if signals_df is None or signals_df.empty:
+        # Build baseline equity curve from prices
+        baseline_equity = _calculate_baseline_equity(prices[price_col], initial_equity)
+        equity_curve = [
+            {
+                'date': str(prices[date_col].iloc[i].date()) if hasattr(prices[date_col].iloc[i], 'date') else str(prices[date_col].iloc[i]),
+                'strategy': baseline_equity.iloc[i],
+                'baseline': baseline_equity.iloc[i]
+            }
+            for i in range(len(prices))
+        ]
         baseline = BaselineComparison(
             strategy_return=buy_hold_return,
             buy_hold_return=buy_hold_return,
             outperformance=0.0,
             outperformance_pct=0.0
         )
-        return BacktestResult(metrics=empty_metrics, baseline=baseline, equity_curve=[])
+        metrics = _empty_metrics()
+        metrics.total_return = buy_hold_return
+        return BacktestResult(metrics=metrics, baseline=baseline, equity_curve=equity_curve)
 
-    # Build backtest data with boundaries
-    df = signals_df.copy()
-    df[date_col] = pd.to_datetime(df[date_col])
+    # Build backtest data: merge signals with price boundaries
+    signals = signals_df.copy()
+    signals[date_col] = pd.to_datetime(signals[date_col])
 
     # Create boundary rows (HOLD = stay in current position)
     start_row = pd.DataFrame({
-        date_col: [pd.to_datetime(start_date)],
-        price_col: [float(start_price)],
+        date_col: [start_date],
+        price_col: [start_price],
         signal_col: ['HOLD']
     })
     end_row = pd.DataFrame({
-        date_col: [pd.to_datetime(end_date)],
-        price_col: [float(end_price)],
+        date_col: [end_date],
+        price_col: [end_price],
         signal_col: ['HOLD']
     })
 
-    # Combine: start + signals + end
-    backtest_df = pd.concat([start_row, df, end_row], ignore_index=True)
-
-    # Remove duplicates (keep signal if on same date as boundary)
+    # Combine: start + signals + end (sparse backtest data)
+    backtest_df = pd.concat([start_row, signals, end_row], ignore_index=True)
     backtest_df = backtest_df.drop_duplicates(subset=date_col, keep='last')
     backtest_df = backtest_df.sort_values(date_col).reset_index(drop=True)
 
-    # Run standard backtest
-    metrics = run_backtest(backtest_df, date_col, price_col, signal_col)
+    # Run backtest simulation on sparse data
+    metrics, trades, strategy_equity_norm = _run_backtest_internal(backtest_df, date_col, price_col, signal_col)
+
+    # Build equity curves using full price data
+    # Merge strategy positions with daily prices
+    baseline_equity = _calculate_baseline_equity(prices[price_col], initial_equity)
+
+    # Interpolate strategy equity to daily prices
+    # Create position series from signals
+    position = 1  # Start invested
+    positions = {}
+    for _, row in backtest_df.iterrows():
+        if row[signal_col] == 'SELL':
+            position = 0
+        elif row[signal_col] == 'BUY':
+            position = 1
+        positions[row[date_col]] = position
+
+    # Forward-fill positions across all price dates
+    current_position = 1
+    strategy_equity = []
+    entry_price = start_price
+    realized_return = 0.0
+
+    for i, row in prices.iterrows():
+        date = row[date_col]
+        price = float(row[price_col])
+
+        # Check if there's a signal on this date
+        if date in positions:
+            new_position = positions[date]
+            if current_position == 1 and new_position == 0:
+                # SELL: realize gains/losses
+                realized_return += (price - entry_price) / entry_price
+                current_position = 0
+            elif current_position == 0 and new_position == 1:
+                # BUY: re-enter
+                entry_price = price
+                current_position = 1
+
+        # Calculate equity
+        if current_position == 1:
+            unrealized = (price - entry_price) / entry_price
+            equity = initial_equity * (1 + realized_return + unrealized)
+        else:
+            equity = initial_equity * (1 + realized_return)
+
+        strategy_equity.append(equity)
+
+    # Build equity curve
+    equity_curve = [
+        {
+            'date': str(prices[date_col].iloc[i].date()) if hasattr(prices[date_col].iloc[i], 'date') else str(prices[date_col].iloc[i]),
+            'strategy': strategy_equity[i],
+            'baseline': baseline_equity.iloc[i]
+        }
+        for i in range(len(prices))
+    ]
 
     # Calculate baseline comparison
     strategy_return = metrics.total_return
@@ -947,19 +897,6 @@ def run_backtest_with_boundaries(
         outperformance_pct=outperformance_pct
     )
 
-    # Build equity curve
-    _, strategy_equity_norm = simulate_trades(backtest_df, date_col, price_col, signal_col)
-    baseline_equity = calculate_baseline_equity(backtest_df[price_col], 10000.0)
-    strategy_equity = [e * 10000.0 for e in strategy_equity_norm]
-
-    equity_curve = []
-    for i in range(len(backtest_df)):
-        equity_curve.append({
-            "date": str(backtest_df.iloc[i][date_col]),
-            "strategy": float(strategy_equity[i]) if i < len(strategy_equity) else float(strategy_equity[-1]),
-            "baseline": float(baseline_equity.iloc[i]) if i < len(baseline_equity) else float(baseline_equity.iloc[-1]),
-        })
-
     return BacktestResult(
         metrics=metrics,
         baseline=baseline,
@@ -968,24 +905,12 @@ def run_backtest_with_boundaries(
 
 
 def metrics_to_dict(metrics: BacktestMetrics) -> Dict:
-    """Convert BacktestMetrics to dict for JSON serialization."""
-    return {
-        'total_return': metrics.total_return,
-        'cagr': metrics.cagr,
-        'sharpe_ratio': metrics.sharpe_ratio,
-        'sortino_ratio': metrics.sortino_ratio,
-        'max_drawdown': metrics.max_drawdown,
-        'volatility': metrics.volatility,
-        'win_rate': metrics.win_rate,
-        'daily_win_rate': metrics.daily_win_rate,
-        'monthly_win_rate': metrics.monthly_win_rate,
-        'num_trades': metrics.num_trades,
-        'avg_trade_return': metrics.avg_trade_return,
-        'total_predictions': metrics.total_signals,
-        'buy_signals': metrics.buy_signals,
-        'sell_signals': metrics.sell_signals,
-        'hold_signals': metrics.hold_signals
-    }
+    """
+    Convert BacktestMetrics to dict for JSON serialization.
+
+    DEPRECATED: Use metrics.to_dict() instead.
+    """
+    return metrics.to_dict()
 
 
 # =============================================================================
@@ -1020,7 +945,7 @@ def calculate_buy_hold_return(prices: pd.Series = None, *, start_price: float = 
     return float((prices.iloc[-1] / prices.iloc[0]) - 1)
 
 
-def calculate_baseline_equity(
+def _calculate_baseline_equity(
     prices: pd.Series,
     initial_equity: float = 10000.0
 ) -> pd.Series:
@@ -1040,7 +965,7 @@ def calculate_baseline_equity(
 
     Example:
         prices = pd.Series([100, 105, 95, 110])
-        baseline = calculate_baseline_equity(prices, 10000)
+        baseline = _calculate_baseline_equity(prices, 10000)
         # Returns: [10000, 10500, 9500, 11000]
     """
     if prices is None or len(prices) < 1:
@@ -1056,32 +981,6 @@ def calculate_baseline_equity(
         equity.append(initial_equity * (1 + ret))
 
     return pd.Series(equity)
-
-
-def compare_to_baseline(
-    strategy_return: float,
-    prices: pd.Series
-) -> BaselineComparison:
-    """
-    Compare strategy return to buy-and-hold baseline.
-
-    Args:
-        strategy_return: Strategy's total return (decimal)
-        prices: Price series for the period
-
-    Returns:
-        BaselineComparison with outperformance metrics
-    """
-    buy_hold = calculate_buy_hold_return(prices)
-    outperformance = strategy_return - buy_hold
-    outperformance_pct = ((1 + strategy_return) / (1 + buy_hold) - 1) * 100 if buy_hold != -1 else 0.0
-
-    return BaselineComparison(
-        strategy_return=strategy_return,
-        buy_hold_return=buy_hold,
-        outperformance=outperformance,
-        outperformance_pct=outperformance_pct
-    )
 
 
 def analyze_exit_reentry(

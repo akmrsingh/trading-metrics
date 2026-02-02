@@ -95,19 +95,6 @@ class TestBaselineComparison:
         result = calculate_buy_hold_return(start_price=50.0, end_price=75.0)
         assert result == pytest.approx(0.50, rel=0.001)
 
-    def test_compare_to_baseline(self):
-        """Compare strategy return to baseline."""
-        from trading_metrics import compare_to_baseline
-
-        prices = pd.Series([100, 110, 120])  # B&H = 20%
-        strategy_return = 0.25  # Strategy = 25%
-
-        result = compare_to_baseline(strategy_return, prices)
-
-        assert abs(result.buy_hold_return - 0.20) < 0.001
-        assert abs(result.strategy_return - 0.25) < 0.001
-        assert abs(result.outperformance - 0.05) < 0.001
-
 
 class TestTradeAnalysis:
     """Tests for trade cycle analysis."""
@@ -246,15 +233,6 @@ class TestWinRates:
         result = calculate_trade_win_rate(trades)
         assert result == pytest.approx(2/3, rel=0.01)  # 66.7%
 
-    def test_daily_win_rate(self):
-        """Daily win rate should count positive days."""
-        from trading_metrics import calculate_daily_win_rate
-
-        returns = pd.Series([0.01, -0.01, 0.02, 0.01, -0.02])  # 3 wins, 2 losses
-        result = calculate_daily_win_rate(returns)
-
-        assert result == pytest.approx(3/5, rel=0.01)  # 60%
-
 
 class TestDataClasses:
     """Tests for dataclass serialization."""
@@ -298,270 +276,196 @@ class TestDataClasses:
 class TestRunBacktest:
     """Tests for run_backtest function - the main backtest entry point."""
 
-    def test_run_backtest_all_hold(self):
-        """All HOLD signals = buy and hold, should match B&H return."""
+    def test_run_backtest_no_signals(self):
+        """No signals = buy and hold, should match B&H return."""
         from trading_metrics import run_backtest, calculate_buy_hold_return
 
-        # Create test data: price goes from 100 to 120 (20% return)
-        df = pd.DataFrame({
+        # Price data: 100 to 120 (20% return)
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=5),
-            'price': [100, 105, 110, 115, 120],
-            'action': ['HOLD', 'HOLD', 'HOLD', 'HOLD', 'HOLD']
+            'price': [100, 105, 110, 115, 120]
         })
 
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        # Empty signals = stayed invested
+        signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        # Strategy return should equal B&H since always holding
-        bh_return = calculate_buy_hold_return(df['price'])
-        assert result.total_return == pytest.approx(bh_return, rel=0.01)
-        assert result.total_return == pytest.approx(0.20, rel=0.01)
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
+
+        # Strategy return should equal B&H since no trades
+        assert result.baseline.buy_hold_return == pytest.approx(0.20, rel=0.01)
+        assert result.metrics.total_return == pytest.approx(0.20, rel=0.01)
 
     def test_run_backtest_sell_at_top_buy_at_bottom(self):
         """Perfect timing: sell before drop, buy at bottom."""
         from trading_metrics import run_backtest
 
         # Price: 100 -> 110 -> 90 -> 100
-        # Sell at 110, buy at 90 = capture the dip
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=4),
-            'price': [100.0, 110.0, 90.0, 100.0],
-            'action': ['HOLD', 'SELL', 'BUY', 'HOLD']
+            'price': [100.0, 110.0, 90.0, 100.0]
         })
 
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        # Sell at 110, buy at 90
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-03')],
+            'price': [110.0, 90.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
         # Started invested at 100, grew to 110, sold
         # Bought back at 90, ended at 100
         # Return: (110/100) * (100/90) - 1 = 1.1 * 1.111 - 1 = 0.222 (22.2%)
-        assert result.total_return > 0.20  # Beat B&H (0%)
-        assert result.num_trades >= 1
+        assert result.metrics.total_return > 0.20  # Beat B&H (0%)
+        assert result.metrics.num_trades >= 1
 
     def test_run_backtest_bad_timing(self):
         """Bad timing: sell at bottom, buy at top."""
         from trading_metrics import run_backtest
 
         # Price: 100 -> 90 -> 110 -> 100
-        # Sell at 90 (bottom), buy at 110 (top) = missed the recovery
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=4),
-            'price': [100.0, 90.0, 110.0, 100.0],
-            'action': ['HOLD', 'SELL', 'BUY', 'HOLD']
+            'price': [100.0, 90.0, 110.0, 100.0]
         })
 
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        # Sell at 90 (bottom), buy at 110 (top)
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-03')],
+            'price': [90.0, 110.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
         # Started at 100, dropped to 90, sold (realized -10%)
         # Bought at 110, dropped to 100 (another loss)
         # Return should be negative
-        assert result.total_return < 0
+        assert result.metrics.total_return < 0
 
     def test_run_backtest_realistic_scenario(self):
         """Test with realistic trading scenario."""
-        from trading_metrics import run_backtest, calculate_buy_hold_return
+        from trading_metrics import run_backtest
 
         # Simulate a market drop and recovery
         # Price: 100 -> 95 -> 85 -> 80 -> 85 -> 95 -> 100
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=7),
-            'price': [100.0, 95.0, 85.0, 80.0, 85.0, 95.0, 100.0],
-            'action': ['HOLD', 'SELL', 'HOLD', 'BUY', 'HOLD', 'HOLD', 'HOLD']
+            'price': [100.0, 95.0, 85.0, 80.0, 85.0, 95.0, 100.0]
         })
 
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        # Sell at 95, buy at 80
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-04')],
+            'price': [95.0, 80.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
         # B&H return = 0% (100 -> 100)
-        bh_return = calculate_buy_hold_return(df['price'])
-        assert bh_return == pytest.approx(0.0, abs=0.01)
+        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
 
-        # Strategy: Sold at 95, bought at 80
-        # Avoided drop from 95->80 (15.8% drop)
-        # Then rode from 80->100 (25% gain)
-        # Net: (95/100) * (100/80) - 1 = 0.95 * 1.25 - 1 = 0.1875 (18.75%)
-        assert result.total_return > bh_return  # Beat B&H
+        # Strategy should beat B&H
+        assert result.metrics.total_return > result.baseline.buy_hold_return
 
     def test_run_backtest_num_trades(self):
         """Verify trade count is correct."""
         from trading_metrics import run_backtest
 
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=6),
-            'price': [100, 105, 100, 110, 100, 105],
-            'action': ['HOLD', 'SELL', 'BUY', 'SELL', 'BUY', 'HOLD']
+            'price': [100, 105, 100, 110, 100, 105]
         })
 
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        # 2 SELL-BUY cycles
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-03'),
+                     pd.Timestamp('2024-01-04'), pd.Timestamp('2024-01-05')],
+            'price': [105.0, 100.0, 110.0, 100.0],
+            'action': ['SELL', 'BUY', 'SELL', 'BUY']
+        })
 
-        # 2 SELL signals = 2 trade cycles
-        assert result.num_trades == 2
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
-    def test_run_backtest_empty_dataframe(self):
-        """Should handle empty dataframe gracefully."""
+        # 2 trade cycles
+        assert result.metrics.num_trades == 2
+
+    def test_run_backtest_empty_prices(self):
+        """Should handle empty prices gracefully."""
         from trading_metrics import run_backtest
 
-        df = pd.DataFrame({'date': [], 'price': [], 'action': []})
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        prices_df = pd.DataFrame({'date': [], 'price': []})
+        signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        assert result.total_return == 0.0
-        assert result.num_trades == 0
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
-    def test_run_backtest_single_row(self):
-        """Should handle single row gracefully."""
+        assert result.metrics.total_return == 0.0
+        assert result.metrics.num_trades == 0
+
+    def test_run_backtest_single_price(self):
+        """Should handle single price gracefully."""
         from trading_metrics import run_backtest
 
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': ['2024-01-01'],
-            'price': [100],
-            'action': ['HOLD']
+            'price': [100]
         })
-        result = run_backtest(df, date_col='date', price_col='price', signal_col='action')
+        signals_df = pd.DataFrame({'date': [], 'price': [], 'action': []})
 
-        assert result.total_return == 0.0
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
+        assert result.metrics.total_return == 0.0
 
-class TestRunBacktestWithBoundaries:
-    """Tests for run_backtest_with_boundaries - the standard function for prediction signals."""
+    def test_run_backtest_equity_curve(self):
+        """Should return equity curve with daily values."""
+        from trading_metrics import run_backtest
 
-    def test_basic_sell_buy_cycle(self):
-        """Test basic SELL then BUY cycle with boundaries."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        # Start at 100, SELL at 110, BUY at 90, end at 100
-        signals = pd.DataFrame({
-            'date': ['2024-01-15', '2024-02-01'],
-            'price': [110.0, 90.0],
-            'action': ['SELL', 'BUY']
+        prices_df = pd.DataFrame({
+            'date': pd.date_range('2024-01-01', periods=5),
+            'price': [100, 105, 110, 108, 115]
         })
 
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=100.0, end_price=100.0,
-            start_date='2024-01-01', end_date='2024-03-01'
-        )
-
-        # B&H: 100 -> 100 = 0%
-        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
-
-        # Strategy: Started at 100, grew to 110 (+10%), sold
-        # Out while dropped to 90
-        # Bought at 90, grew to 100 (+11.1%)
-        # Total: 1.10 * 1.111 = 1.222 = +22.2%
-        assert result.metrics.total_return == pytest.approx(0.222, rel=0.05)
-        assert result.baseline.outperformance > 0.20  # Beat B&H by ~22%
-
-    def test_no_signals_equals_buy_hold(self):
-        """No signals means stayed invested = same as B&H."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        result = run_backtest_with_boundaries(
-            signals_df=pd.DataFrame(),
-            start_price=100.0, end_price=120.0,
-            start_date='2024-01-01', end_date='2024-12-31'
-        )
-
-        # B&H = 20%
-        assert result.baseline.buy_hold_return == pytest.approx(0.20, rel=0.01)
-        # Strategy = B&H when no signals
-        assert result.baseline.strategy_return == pytest.approx(0.20, rel=0.01)
-        assert result.baseline.outperformance == pytest.approx(0.0, abs=0.01)
-
-    def test_bad_timing_underperforms(self):
-        """Bad timing (sell low, buy high) should underperform B&H."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        # SELL at bottom (90), BUY at top (110) - terrible timing
-        signals = pd.DataFrame({
-            'date': ['2024-01-15', '2024-02-01'],
-            'price': [90.0, 110.0],
-            'action': ['SELL', 'BUY']
-        })
-
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=100.0, end_price=100.0,
-            start_date='2024-01-01', end_date='2024-03-01'
-        )
-
-        # B&H = 0%
-        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
-
-        # Strategy: Started at 100, dropped to 90 (-10%), sold
-        # Missed rally to 110
-        # Bought at 110, dropped to 100 (-9%)
-        # Total: 0.90 * 0.91 = 0.82 = -18%
-        assert result.metrics.total_return < 0
-        assert result.baseline.outperformance < 0  # Underperformed B&H
-
-    def test_first_signal_is_sell(self):
-        """First signal being SELL should still work correctly."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        # Only SELL signal, no BUY - stays in cash until end
-        signals = pd.DataFrame({
-            'date': ['2024-01-15'],
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-03')],
             'price': [110.0],
             'action': ['SELL']
         })
 
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=100.0, end_price=90.0,
-            start_date='2024-01-01', end_date='2024-03-01'
-        )
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
-        # B&H: 100 -> 90 = -10%
-        assert result.baseline.buy_hold_return == pytest.approx(-0.10, rel=0.01)
+        # Should have equity curve with 5 points
+        assert len(result.equity_curve) == 5
+        assert 'date' in result.equity_curve[0]
+        assert 'strategy' in result.equity_curve[0]
+        assert 'baseline' in result.equity_curve[0]
 
-        # Strategy: Started at 100, grew to 110 (+10%), sold, stayed cash
-        # Avoided drop from 110 to 90
-        # Return = +10% (just the first leg)
-        assert result.metrics.total_return == pytest.approx(0.10, rel=0.05)
-        assert result.baseline.outperformance > 0.15  # Beat B&H significantly
+    def test_run_backtest_outperformance(self):
+        """Test basic SELL then BUY cycle with outperformance."""
+        from trading_metrics import run_backtest
 
-    def test_multiple_cycles(self):
-        """Multiple SELL-BUY cycles should accumulate correctly."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        signals = pd.DataFrame({
-            'date': ['2024-01-10', '2024-01-20', '2024-02-10', '2024-02-20'],
-            'price': [110.0, 100.0, 115.0, 105.0],
-            'action': ['SELL', 'BUY', 'SELL', 'BUY']
+        # Price goes: 100 -> 110 -> 90 -> 100
+        prices_df = pd.DataFrame({
+            'date': pd.date_range('2024-01-01', periods=4),
+            'price': [100.0, 110.0, 90.0, 100.0]
         })
 
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=100.0, end_price=110.0,
-            start_date='2024-01-01', end_date='2024-03-01'
-        )
-
-        # Should have 2 trade cycles
-        assert result.metrics.num_trades == 2
-
-    def test_realistic_tqqq_scenario(self):
-        """Test with realistic TQQQ-like numbers."""
-        from trading_metrics import run_backtest_with_boundaries
-
-        # TQQQ drops 40%, strategy exits early
-        signals = pd.DataFrame({
-            'date': ['2024-02-01', '2024-03-15'],
-            'price': [75.0, 50.0],
+        # SELL at 110, BUY at 90
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-03')],
+            'price': [110.0, 90.0],
             'action': ['SELL', 'BUY']
         })
 
-        result = run_backtest_with_boundaries(
-            signals_df=signals,
-            start_price=80.0, end_price=60.0,
-            start_date='2024-01-01', end_date='2024-04-01'
-        )
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
-        # B&H: 80 -> 60 = -25%
-        assert result.baseline.buy_hold_return == pytest.approx(-0.25, rel=0.01)
+        # B&H: 100 -> 100 = 0%
+        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
 
-        # Strategy: Started at 80, dropped to 75 (-6.25%), sold
-        # Out while dropped to 50
-        # Bought at 50, grew to 60 (+20%)
-        # Total: 0.9375 * 1.20 = 1.125 = +12.5%
-        assert result.metrics.total_return > 0  # Positive return
-        assert result.baseline.outperformance > 0.35  # Beat B&H by a lot
+        # Strategy should outperform
+        assert result.metrics.total_return > 0.15
+        assert result.baseline.outperformance > 0.15
 
 
 class TestMetricsIntegration:
@@ -571,44 +475,49 @@ class TestMetricsIntegration:
         """Verify strategy return and B&H are calculated consistently."""
         from trading_metrics import run_backtest, calculate_buy_hold_return
 
-        # Market drops 20% then recovers to -10%
-        prices = [100, 95, 90, 85, 80, 85, 90]  # B&H = -10%
-        df = pd.DataFrame({
+        # Market drops then recovers: B&H = -10%
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=7),
-            'price': prices,
-            'action': ['HOLD', 'HOLD', 'SELL', 'HOLD', 'BUY', 'HOLD', 'HOLD']
+            'price': [100, 95, 90, 85, 80, 85, 90]
         })
 
-        result = run_backtest(df)
-        bh_return = calculate_buy_hold_return(pd.Series(prices))
+        # Sell at 90, buy at 80
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-03'), pd.Timestamp('2024-01-05')],
+            'price': [90.0, 80.0],
+            'action': ['SELL', 'BUY']
+        })
+
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
+        bh_return = calculate_buy_hold_return(prices_df['price'])
 
         # B&H should be -10%
         assert bh_return == pytest.approx(-0.10, rel=0.01)
 
-        # Strategy: sold at 90, bought at 80
-        # Realized: 90/100 = 0.9 (held from 100 to 90)
-        # Then: 90/80 = 1.125 (from 80 to 90)
-        # Total: 0.9 * 1.125 - 1 = 0.0125 (1.25%)
-        assert result.total_return > bh_return  # Strategy should beat B&H
+        # Strategy should beat B&H
+        assert result.metrics.total_return > bh_return
 
     def test_outperformance_calculation(self):
         """Outperformance = strategy_return - buy_hold_return."""
-        from trading_metrics import run_backtest, calculate_buy_hold_return
+        from trading_metrics import run_backtest
 
-        df = pd.DataFrame({
+        prices_df = pd.DataFrame({
             'date': pd.date_range('2024-01-01', periods=5),
-            'price': [100, 110, 100, 90, 100],
-            'action': ['HOLD', 'SELL', 'HOLD', 'BUY', 'HOLD']
+            'price': [100, 110, 100, 90, 100]
         })
 
-        result = run_backtest(df)
-        bh_return = calculate_buy_hold_return(df['price'])
+        # Sell at 110, buy at 90
+        signals_df = pd.DataFrame({
+            'date': [pd.Timestamp('2024-01-02'), pd.Timestamp('2024-01-04')],
+            'price': [110.0, 90.0],
+            'action': ['SELL', 'BUY']
+        })
 
-        outperformance = result.total_return - bh_return
+        result = run_backtest(signals_df, prices_df, 'date', 'price')
 
         # B&H = 0% (100 -> 100)
-        assert bh_return == pytest.approx(0.0, abs=0.01)
+        assert result.baseline.buy_hold_return == pytest.approx(0.0, abs=0.01)
 
-        # Strategy should have positive return (sold at 110, bought at 90)
-        assert result.total_return > 0
-        assert outperformance > 0
+        # Strategy should have positive return
+        assert result.metrics.total_return > 0
+        assert result.baseline.outperformance > 0

@@ -148,21 +148,17 @@ print(f"Analysis: {analysis.analysis}")
 | Function | Description |
 |----------|-------------|
 | `calculate_trade_win_rate(trades)` | % of profitable trades |
-| `calculate_daily_win_rate(returns)` | % of profitable days |
-| `calculate_monthly_win_rate(returns)` | % of profitable months |
 
-### Simulation (Start Invested Paradigm)
+### Backtest
 | Function | Description |
 |----------|-------------|
-| `simulate_trades(df)` | Simulate from BUY/SELL signals |
+| `run_backtest(signals_df, prices_df, date_col, price_col)` | Full backtest from sparse signals + prices |
 | `simulate_strategy_from_invested(...)` | Simulate with custom exit/reentry conditions |
-| `run_backtest(df)` | Full backtest returning BacktestMetrics |
 
 ### Baseline Comparison
 | Function | Description |
 |----------|-------------|
 | `calculate_buy_hold_return(prices)` | Buy-and-hold return |
-| `compare_to_baseline(strategy_return, prices)` | Strategy vs buy-and-hold |
 | `analyze_exit_reentry(...)` | Analyze SELL→BUY cycle vs holding |
 
 ### Data Classes

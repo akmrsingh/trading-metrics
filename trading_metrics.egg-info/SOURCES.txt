@@ -2,9 +2,11 @@ README.md
 pyproject.toml
 tests/__init__.py
 tests/test_metrics.py
+tests/test_strategies.py
 trading_metrics/__init__.py
 trading_metrics/backfill_db.py
 trading_metrics/metrics.py
+trading_metrics/strategies.py
 trading_metrics.egg-info/PKG-INFO
 trading_metrics.egg-info/SOURCES.txt
 trading_metrics.egg-info/dependency_links.txt

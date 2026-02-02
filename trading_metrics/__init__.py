@@ -13,6 +13,17 @@ Usage:
 """
 
 from . import backfill_db
+from . import strategies
+
+from .strategies import (
+    # Signal generation
+    generate_signals,
+    backtest_strategy,
+    # Indicator preparation (for simulation)
+    prepare_indicators,
+    make_exit_condition,
+    make_reentry_condition,
+)
 
 from .metrics import (
     # Core metric calculations
@@ -23,25 +34,18 @@ from .metrics import (
     calculate_cagr,
     calculate_volatility,
 
-    # Win rate variants
+    # Win rate
     calculate_trade_win_rate,
-    calculate_daily_win_rate,
-    calculate_monthly_win_rate,
 
     # Trade helpers
     calculate_avg_trade_return,
 
-    # Simulation (legacy - starts with cash)
-    simulate_trades,
-
-    # Simulation (standardized - starts 100% invested)
+    # Simulation (starts 100% invested, uses exit/reentry conditions)
     simulate_strategy_from_invested,
     StrategySimulationResult,
 
-    # High-level backtest
+    # Backtest
     run_backtest,
-    run_backtest_with_curves,
-    run_backtest_with_boundaries,
     BacktestMetrics,
     BacktestResult,
     Trade,
@@ -50,8 +54,6 @@ from .metrics import (
     TradeAnalysis,
     BaselineComparison,
     calculate_buy_hold_return,
-    calculate_baseline_equity,
-    compare_to_baseline,
     analyze_exit_reentry,
 
     # Serialization
@@ -61,6 +63,12 @@ from .metrics import (
 __version__ = "0.1.0"
 __all__ = [
     "backfill_db",
+    "strategies",
+    "generate_signals",
+    "backtest_strategy",
+    "prepare_indicators",
+    "make_exit_condition",
+    "make_reentry_condition",
     "calculate_sharpe_ratio",
     "calculate_sortino_ratio",
     "calculate_max_drawdown",
@@ -68,23 +76,16 @@ __all__ = [
     "calculate_cagr",
     "calculate_volatility",
     "calculate_trade_win_rate",
-    "calculate_daily_win_rate",
-    "calculate_monthly_win_rate",
     "calculate_avg_trade_return",
-    "simulate_trades",
     "simulate_strategy_from_invested",
     "StrategySimulationResult",
     "run_backtest",
-    "run_backtest_with_curves",
-    "run_backtest_with_boundaries",
     "BacktestMetrics",
     "BacktestResult",
     "Trade",
     "TradeAnalysis",
     "BaselineComparison",
     "calculate_buy_hold_return",
-    "calculate_baseline_equity",
-    "compare_to_baseline",
     "analyze_exit_reentry",
     "metrics_to_dict",
 ]
