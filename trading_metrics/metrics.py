@@ -809,6 +809,12 @@ def run_backtest(
     signals = signals_df.copy()
     signals[date_col] = pd.to_datetime(signals[date_col])
 
+    # Ensure signals has correct price column name (may be 'price' from predictions table)
+    # Rename to match price_col if needed
+    signal_price_col = 'price' if 'price' in signals.columns else price_col
+    if signal_price_col != price_col and signal_price_col in signals.columns:
+        signals = signals.rename(columns={signal_price_col: price_col})
+
     # Create boundary rows (HOLD = stay in current position)
     start_row = pd.DataFrame({
         date_col: [start_date],
