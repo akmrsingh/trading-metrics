@@ -6,20 +6,29 @@ Standardized performance metrics using quantstats library.
 All trading projects should use these functions for consistency.
 
 Usage:
-    from trading_metrics import calculate_sharpe_ratio, calculate_max_drawdown
+    # Direct import for stoploss (recommended)
+    from trading_metrics.stoploss import generate_stoploss_signals
 
-    sharpe = calculate_sharpe_ratio(returns_series)
-    max_dd = calculate_max_drawdown(returns_series)
+    # Or use the dispatcher
+    from trading_metrics import generate_signals
+
+    signals = generate_stoploss_signals(config, prices_df, symbol)
 """
 
 from . import backfill_db
 from . import strategies
+from . import stoploss
+from . import momentum
 
+# Direct strategy imports (preferred)
+from .stoploss import generate_stoploss_signals
+from .momentum import generate_momentum_signals
+
+# Dispatcher (backward compatible)
 from .strategies import (
-    # Signal generation
     generate_signals,
     backtest_strategy,
-    # Indicator preparation (for simulation)
+    # Legacy - deprecated, use stoploss.py directly
     prepare_indicators,
     make_exit_condition,
     make_reentry_condition,
@@ -72,8 +81,15 @@ __all__ = [
     # Modules
     "backfill_db",
     "strategies",
+    "stoploss",
+    "momentum",
+    # Direct strategy functions (preferred)
+    "generate_stoploss_signals",
+    "generate_momentum_signals",
+    # Dispatcher (backward compatible)
     "generate_signals",
     "backtest_strategy",
+    # Legacy - deprecated
     "prepare_indicators",
     "make_exit_condition",
     "make_reentry_condition",
