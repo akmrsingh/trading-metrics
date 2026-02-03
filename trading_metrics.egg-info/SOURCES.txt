@@ -7,6 +7,8 @@ tests/test_strategies.py
 trading_metrics/__init__.py
 trading_metrics/backfill_db.py
 trading_metrics/metrics.py
+trading_metrics/momentum.py
+trading_metrics/stoploss.py
 trading_metrics/strategies.py
 trading_metrics.egg-info/PKG-INFO
 trading_metrics.egg-info/SOURCES.txt

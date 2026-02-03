@@ -30,23 +30,46 @@ pip install git+https://github.com/YOUR_USERNAME/trading-metrics.git
 ```python
 from trading_metrics import (
     run_backtest,
-    calculate_sharpe_ratio,
-    calculate_max_drawdown,
-    simulate_strategy_from_invested,
+    generate_signals,
+    InsufficientDataError,
+    InvalidDataError,
 )
 
-# Run backtest from predictions DataFrame
-metrics = run_backtest(predictions_df)
-print(f"Return: {metrics.total_return:.2%}")
-print(f"Sharpe: {metrics.sharpe_ratio:.2f}")
-
-# Custom strategy simulation
-result = simulate_strategy_from_invested(
-    prices=df,
-    exit_condition=my_exit_fn,
-    reentry_condition=my_reentry_fn,
+# Generate signals
+signals = generate_signals(
+    model_type="stoploss",
+    config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+    prices_df=prices,
+    symbol="QQQ"
 )
+
+# Run backtest
+result = run_backtest(signals, prices, 'date', 'close')
+print(f"Return: {result.baseline.strategy_return:.2%}")
+print(f"Sharpe: {result.metrics.sharpe_ratio:.2f}")
 ```
+
+## Error Handling
+
+**No silent failures.** Functions raise clear errors on invalid input:
+
+```python
+from trading_metrics import run_backtest, InsufficientDataError, InvalidDataError
+
+try:
+    result = run_backtest(signals, prices, 'date', 'close')
+except InsufficientDataError as e:
+    print(f"Not enough data: {e}")
+    # e.g., "prices_df is empty - no price data provided"
+except InvalidDataError as e:
+    print(f"Bad data: {e}")
+    # e.g., "prices_df contains 3 NaN price value(s)"
+```
+
+| Error | When Raised |
+|-------|-------------|
+| `InsufficientDataError` | Empty data, not enough rows, missing required data |
+| `InvalidDataError` | NaN/Inf values, missing columns, negative prices |
 
 ## Trading Paradigm
 
@@ -60,8 +83,9 @@ All simulations follow **"Start Invested"**:
 
 | Category | Functions |
 |----------|-----------|
+| **Errors** | `InsufficientDataError`, `InvalidDataError` |
 | **Metrics** | `calculate_sharpe_ratio`, `calculate_sortino_ratio`, `calculate_max_drawdown`, `calculate_cagr`, `calculate_volatility` |
-| **Backtest** | `run_backtest`, `run_backtest_with_boundaries`, `simulate_strategy_from_invested` |
+| **Backtest** | `run_backtest`, `simulate_strategy_from_invested` |
 | **Signals** | `generate_signals`, `make_exit_condition`, `make_reentry_condition` |
 | **Analysis** | `analyze_exit_reentry`, `calculate_buy_hold_return` |
 
