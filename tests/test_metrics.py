@@ -464,6 +464,43 @@ class TestRunBacktest:
         assert result.metrics.total_return > 0.15
         assert result.baseline.outperformance > 0.15
 
+    def test_run_backtest_hold_only_equals_buy_hold(self):
+        """HOLD-only signals (0 trades) should have return exactly equal to B&H.
+
+        This is a critical invariant: if no BUY/SELL signals, strategy = buy-and-hold.
+        Bug found: when signal prices differ from raw prices, returns diverged.
+        """
+        from trading_metrics import run_backtest
+
+        # Raw prices: 100 -> 120 (20% return)
+        prices_df = pd.DataFrame({
+            'date': pd.date_range('2024-01-01', periods=5),
+            'close': [100.0, 105.0, 110.0, 115.0, 120.0]
+        })
+
+        # HOLD-only signals with DIFFERENT prices (simulating prediction vs close)
+        # This is the bug scenario: signal prices differ from raw prices
+        signals_df = pd.DataFrame({
+            'date': pd.date_range('2024-01-01', periods=5),
+            'price': [99.0, 104.0, 109.0, 114.0, 119.0],  # Different from close!
+            'action': ['HOLD', 'HOLD', 'HOLD', 'HOLD', 'HOLD']
+        })
+
+        result = run_backtest(signals_df, prices_df, 'date', 'close', signal_col='action')
+
+        # With 0 trades, strategy return MUST equal B&H return
+        assert result.metrics.num_trades == 0, "Should have 0 trades with HOLD-only signals"
+        assert result.baseline.buy_hold_return == pytest.approx(0.20, rel=0.01)
+
+        # THE KEY ASSERTION: strategy return must equal B&H when no trades
+        assert result.metrics.total_return == pytest.approx(
+            result.baseline.buy_hold_return, rel=0.01
+        ), f"With 0 trades, strategy ({result.metrics.total_return:.4f}) must equal B&H ({result.baseline.buy_hold_return:.4f})"
+
+        # Outperformance must be ~0 with no trades
+        assert result.baseline.outperformance == pytest.approx(0.0, abs=0.01), \
+            f"With 0 trades, outperformance should be 0, got {result.baseline.outperformance:.4f}"
+
 
 class TestMetricsIntegration:
     """Integration tests verifying metrics work together correctly."""

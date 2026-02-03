@@ -891,6 +891,12 @@ def run_backtest(
     backtest_df = backtest_df.drop_duplicates(subset=date_col, keep='last')
     backtest_df = backtest_df.sort_values(date_col).reset_index(drop=True)
 
+    # CRITICAL: Always use prices_df prices for boundaries, not signal prices
+    # This ensures strategy return matches B&H when there are no trades
+    # (Signal prices may differ from close prices due to intraday execution)
+    backtest_df.loc[backtest_df[date_col] == start_date, price_col] = start_price
+    backtest_df.loc[backtest_df[date_col] == end_date, price_col] = end_price
+
     # Run backtest simulation on sparse data
     metrics, trades, strategy_equity_norm = _run_backtest_internal(backtest_df, date_col, price_col, signal_col)
 
