@@ -734,28 +734,40 @@ def run_backtest(
     date_col: str,
     price_col: str,
     signal_col: str = 'action',
-    initial_equity: float = 10000.0
+    initial_equity: float = 10000.0,
+    validate_completeness: bool = False
 ) -> BacktestResult:
     """
-    Run backtest on sparse BUY/SELL signals with price data for equity curves.
+    Run backtest on BUY/SELL/HOLD signals with price data for equity curves.
 
     PARADIGM: Start 100% invested
         - SELL: Exit position (go to cash)
         - BUY: Re-enter position
+        - HOLD: Stay in current position
         - If period ends while out, equity stays at cash level
 
     Args:
-        signals_df: DataFrame with sparse BUY/SELL signals (date, price, action)
+        signals_df: DataFrame with BUY/SELL signals (date, price, action)
                     From predictions table. Can be empty (= stayed invested).
+                    Can include HOLD signals for gap validation.
         prices_df: DataFrame with daily prices for the period (date, close)
                    From raw_prices table. Used for equity curves and B&H calc.
         date_col: Name of date column (default 'date')
         price_col: Name of price column (default 'close')
         signal_col: Name of signal column (default 'action')
         initial_equity: Starting equity value for curves (default 10000)
+        validate_completeness: If True, raise InvalidDataError if any trading day
+            in prices_df is missing from signals_df. Use this when signals_df
+            includes HOLD signals (include_hold=True from generate_signals).
+            This enables detecting gaps where the model failed to run.
 
     Returns:
         BacktestResult with metrics, baseline comparison, and equity curves
+
+    Raises:
+        InsufficientDataError: If prices_df is empty or has < 2 rows
+        InvalidDataError: If required columns missing, NaN prices, or (when
+            validate_completeness=True) missing prediction dates
 
     Example:
         # Sparse signals from predictions table
@@ -772,6 +784,9 @@ def run_backtest(
         })
 
         result = run_backtest(signals, prices)
+
+        # With gap validation (use when include_hold=True in generate_signals)
+        result = run_backtest(signals, prices, validate_completeness=True)
     """
     # Validate prices - raise clear errors instead of returning empty results
     if prices_df is None:
@@ -793,6 +808,25 @@ def run_backtest(
     if prices[price_col].isna().any():
         nan_count = prices[price_col].isna().sum()
         raise InvalidDataError(f"prices_df contains {nan_count} NaN price value(s) - clean data before backtest")
+
+    # Validate completeness if requested (for include_hold=True signals)
+    if validate_completeness and signals_df is not None and not signals_df.empty:
+        signals_copy = signals_df.copy()
+        signals_copy[date_col] = pd.to_datetime(signals_copy[date_col])
+
+        # Normalize dates to date objects for comparison
+        trading_days = set(prices[date_col].dt.date if hasattr(prices[date_col].iloc[0], 'date') else prices[date_col])
+        signal_days = set(signals_copy[date_col].dt.date if hasattr(signals_copy[date_col].iloc[0], 'date') else signals_copy[date_col])
+
+        missing_days = trading_days - signal_days
+        if missing_days:
+            missing_sorted = sorted(missing_days)
+            raise InvalidDataError(
+                f"Missing predictions for {len(missing_days)} trading day(s). "
+                f"First missing: {missing_sorted[0]}, last missing: {missing_sorted[-1]}. "
+                f"Model may have failed to run on these dates. "
+                f"Set validate_completeness=False to skip this check for sparse signals."
+            )
 
     # Get boundaries from prices
     start_price = float(prices[price_col].iloc[0])

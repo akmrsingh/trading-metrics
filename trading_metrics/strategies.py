@@ -164,10 +164,11 @@ def generate_signals(
     date_col: str = 'date',
     price_col: str = 'close',
     high_col: str = 'high',
-    low_col: str = 'low'
+    low_col: str = 'low',
+    include_hold: bool = False
 ) -> pd.DataFrame:
     """
-    Generate sparse BUY/SELL signals for any model type.
+    Generate trading signals for any model type.
 
     Args:
         model_type: Strategy type ("stoploss", "dip_buyer", "momentum")
@@ -178,10 +179,14 @@ def generate_signals(
         price_col: Name of close price column
         high_col: Name of high price column
         low_col: Name of low price column
+        include_hold: If True, include HOLD signals for every trading day.
+            This enables distinguishing between "model decided HOLD" vs "model didn't run".
+            HOLD is a real decision from model evaluation, not a synthetic fill-in.
 
     Returns:
         DataFrame with columns: date, action, price, reason, symbol
-        Only contains BUY and SELL rows (no HOLD)
+        If include_hold=False (default): Only contains BUY and SELL rows (sparse)
+        If include_hold=True: Contains one row per trading day (BUY, SELL, or HOLD)
 
     Raises:
         InsufficientDataError: If prices_df is empty or too short
@@ -201,9 +206,9 @@ def generate_signals(
         raise InvalidDataError(f"prices_df contains {nan_count} NaN price value(s) in '{price_col}' column")
 
     if model_type in ("stoploss", "dip_buyer", "custom"):
-        return _generate_stoploss_signals(config, prices_df, symbol, date_col, price_col, high_col)
+        return _generate_stoploss_signals(config, prices_df, symbol, date_col, price_col, high_col, include_hold)
     elif model_type == "momentum":
-        return _generate_momentum_signals(config, prices_df, symbol, date_col, price_col)
+        return _generate_momentum_signals(config, prices_df, symbol, date_col, price_col, include_hold)
     else:
         raise ValueError(f"Unknown model type: {model_type}. Supported: stoploss, dip_buyer, momentum")
 
@@ -214,7 +219,8 @@ def _generate_stoploss_signals(
     symbol: str,
     date_col: str = 'date',
     price_col: str = 'close',
-    high_col: str = 'high'
+    high_col: str = 'high',
+    include_hold: bool = False
 ) -> pd.DataFrame:
     """
     Generate signals for stoploss/dip_buyer strategy.
@@ -222,6 +228,7 @@ def _generate_stoploss_signals(
     Paradigm: Start 100% invested
     - SELL when exit conditions met (drawdown, VIX, take profit, stop loss, trailing stop)
     - BUY when entry conditions met (dip from rolling high)
+    - HOLD when no conditions are triggered (explicit decision)
 
     Config parameters:
         buy_dip_threshold: float - Buy when X% below N-day high (default: 0.05)
@@ -232,6 +239,10 @@ def _generate_stoploss_signals(
         stop_loss_pct: float - Stop loss at X% decline (optional)
         trailing_stop_pct: float - Trailing stop X% from N-day high (optional)
         trailing_stop_lookback: int - Days for trailing stop (default: 10)
+
+    Args:
+        include_hold: If True, include HOLD signals for days where no action is triggered.
+            HOLD is a real model decision meaning "no exit/entry conditions met".
     """
     df = prices_df.copy()
 
@@ -278,6 +289,8 @@ def _generate_stoploss_signals(
     for idx, row in df.iterrows():
         price = row[price_col]
         date = row[date_col]
+        action = None
+        reason = None
 
         if is_invested:
             # Check EXIT conditions
@@ -309,30 +322,38 @@ def _generate_stoploss_signals(
                     sell_signal = f"Trailing stop {row['_pct_from_trailing']:.1%}"
 
             if sell_signal:
-                signals.append({
-                    date_col: date,
-                    'action': 'SELL',
-                    'price': price,
-                    'reason': sell_signal,
-                    'symbol': symbol
-                })
+                action = 'SELL'
+                reason = sell_signal
                 is_invested = False
                 entry_price = None
+            elif include_hold:
+                # Explicit HOLD decision: invested but no exit conditions triggered
+                action = 'HOLD'
+                reason = 'Holding position'
 
         else:
             # Check ENTRY conditions
             if row['_pct_from_high'] <= -buy_dip_threshold:
-                signals.append({
-                    date_col: date,
-                    'action': 'BUY',
-                    'price': price,
-                    'reason': f"Dip {row['_pct_from_high']:.1%}",
-                    'symbol': symbol
-                })
+                action = 'BUY'
+                reason = f"Dip {row['_pct_from_high']:.1%}"
                 is_invested = True
                 entry_price = price
+            elif include_hold:
+                # Explicit HOLD decision: out but no entry conditions triggered
+                action = 'HOLD'
+                reason = 'Waiting for entry'
 
-    # Return sparse signals DataFrame
+        # Add signal if action was determined
+        if action is not None:
+            signals.append({
+                date_col: date,
+                'action': action,
+                'price': price,
+                'reason': reason,
+                'symbol': symbol
+            })
+
+    # Return signals DataFrame
     if not signals:
         return pd.DataFrame(columns=[date_col, 'action', 'price', 'reason', 'symbol'])
 
@@ -344,7 +365,8 @@ def _generate_momentum_signals(
     prices_df: pd.DataFrame,
     symbol: str,
     date_col: str = 'date',
-    price_col: str = 'close'
+    price_col: str = 'close',
+    include_hold: bool = False
 ) -> pd.DataFrame:
     """
     Generate signals for momentum/MA crossover strategy.
@@ -352,6 +374,9 @@ def _generate_momentum_signals(
     Config parameters:
         fast_period: int - Fast MA period (default: 10)
         slow_period: int - Slow MA period (default: 30)
+
+    Args:
+        include_hold: If True, include HOLD signals for days with no crossover.
     """
     df = prices_df.copy()
 
@@ -375,33 +400,46 @@ def _generate_momentum_signals(
     is_invested = True  # Start invested
 
     for idx, row in df.iterrows():
-        if pd.isna(row['_signal_change']):
-            continue
-
         price = row[price_col]
         date = row[date_col]
+        action = None
+        reason = None
 
-        # Bearish crossover (fast crosses below slow) -> SELL
-        if row['_signal_change'] == -1 and is_invested:
+        if pd.isna(row['_signal_change']):
+            # First row, no signal change yet
+            if include_hold:
+                action = 'HOLD'
+                reason = 'Insufficient history for MA crossover'
+        else:
+            # Bearish crossover (fast crosses below slow) -> SELL
+            if row['_signal_change'] == -1 and is_invested:
+                action = 'SELL'
+                reason = f"Bearish crossover (MA{fast_period} < MA{slow_period})"
+                is_invested = False
+
+            # Bullish crossover (fast crosses above slow) -> BUY
+            elif row['_signal_change'] == 1 and not is_invested:
+                action = 'BUY'
+                reason = f"Bullish crossover (MA{fast_period} > MA{slow_period})"
+                is_invested = True
+
+            elif include_hold:
+                # No crossover - explicit HOLD decision
+                if is_invested:
+                    action = 'HOLD'
+                    reason = 'Holding position (no crossover)'
+                else:
+                    action = 'HOLD'
+                    reason = 'Waiting for bullish crossover'
+
+        if action is not None:
             signals.append({
                 date_col: date,
-                'action': 'SELL',
+                'action': action,
                 'price': price,
-                'reason': f"Bearish crossover (MA{fast_period} < MA{slow_period})",
+                'reason': reason,
                 'symbol': symbol
             })
-            is_invested = False
-
-        # Bullish crossover (fast crosses above slow) -> BUY
-        elif row['_signal_change'] == 1 and not is_invested:
-            signals.append({
-                date_col: date,
-                'action': 'BUY',
-                'price': price,
-                'reason': f"Bullish crossover (MA{fast_period} > MA{slow_period})",
-                'symbol': symbol
-            })
-            is_invested = True
 
     if not signals:
         return pd.DataFrame(columns=[date_col, 'action', 'price', 'reason', 'symbol'])

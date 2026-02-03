@@ -447,3 +447,250 @@ class TestIntegration:
             assert all(qqq_signals['symbol'] == 'QQQ')
         if len(tqqq_signals) > 0:
             assert all(tqqq_signals['symbol'] == 'TQQQ')
+
+
+class TestHoldSignals:
+    """Tests for include_hold parameter in generate_signals."""
+
+    @pytest.fixture
+    def price_data(self):
+        """Price data with some volatility."""
+        dates = pd.date_range("2024-01-01", periods=30, freq="B")
+        # Steady prices with small fluctuations (no triggers)
+        prices = [100 + i * 0.1 for i in range(30)]
+
+        return pd.DataFrame({
+            'date': dates,
+            'close': prices,
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.99 for p in prices]
+        })
+
+    @pytest.fixture
+    def price_data_with_dip(self):
+        """Price data with a dip pattern."""
+        dates = pd.date_range("2024-01-01", periods=60, freq="B")
+        prices = []
+        for i in range(60):
+            if i < 20:
+                prices.append(100 + i * 0.5)
+            elif i < 35:
+                prices.append(110 - (i - 20) * 1.0)
+            else:
+                prices.append(95 + (i - 35) * 1.0)
+
+        return pd.DataFrame({
+            'date': dates,
+            'close': prices,
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.99 for p in prices]
+        })
+
+    def test_include_hold_generates_one_signal_per_day(self, price_data):
+        """With include_hold=True, should have one signal per trading day."""
+        from trading_metrics import generate_signals
+
+        signals = generate_signals(
+            model_type="stoploss",
+            config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+            prices_df=price_data,
+            symbol="QQQ",
+            include_hold=True
+        )
+
+        # Should have exactly one signal per trading day
+        assert len(signals) == len(price_data), f"Expected {len(price_data)} signals, got {len(signals)}"
+
+    def test_include_hold_false_is_sparse(self, price_data):
+        """With include_hold=False (default), should be sparse (no HOLD)."""
+        from trading_metrics import generate_signals
+
+        signals = generate_signals(
+            model_type="stoploss",
+            config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+            prices_df=price_data,
+            symbol="QQQ",
+            include_hold=False
+        )
+
+        # Sparse = fewer signals than days
+        assert len(signals) < len(price_data)
+
+        # No HOLD signals in sparse mode
+        if len(signals) > 0:
+            assert 'HOLD' not in signals['action'].values
+
+    def test_hold_is_real_model_decision(self, price_data_with_dip):
+        """HOLD signals should have meaningful reasons (not synthetic)."""
+        from trading_metrics import generate_signals
+
+        signals = generate_signals(
+            model_type="stoploss",
+            config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+            prices_df=price_data_with_dip,
+            symbol="QQQ",
+            include_hold=True
+        )
+
+        hold_signals = signals[signals['action'] == 'HOLD']
+        assert len(hold_signals) > 0, "Should have some HOLD signals"
+
+        # HOLD reasons should be meaningful
+        for _, row in hold_signals.iterrows():
+            reason = row['reason']
+            assert reason is not None
+            assert len(reason) > 0
+            # Reasons should indicate position state
+            assert any(keyword in reason.lower() for keyword in ['hold', 'wait', 'position'])
+
+    def test_buy_sell_hold_only_actions(self, price_data_with_dip):
+        """All signals should be BUY, SELL, or HOLD."""
+        from trading_metrics import generate_signals
+
+        signals = generate_signals(
+            model_type="stoploss",
+            config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+            prices_df=price_data_with_dip,
+            symbol="QQQ",
+            include_hold=True
+        )
+
+        valid_actions = {'BUY', 'SELL', 'HOLD'}
+        actual_actions = set(signals['action'].unique())
+
+        assert actual_actions.issubset(valid_actions), f"Invalid actions: {actual_actions - valid_actions}"
+
+    def test_momentum_include_hold(self):
+        """Momentum strategy should also support include_hold."""
+        from trading_metrics import generate_signals
+
+        dates = pd.date_range("2024-01-01", periods=50, freq="B")
+        prices = [100 + i * 0.5 + 5 * np.sin(i * 0.3) for i in range(50)]
+
+        df = pd.DataFrame({
+            'date': dates,
+            'close': prices,
+            'high': [p * 1.01 for p in prices],
+            'low': [p * 0.99 for p in prices]
+        })
+
+        signals = generate_signals(
+            model_type="momentum",
+            config={"fast_period": 5, "slow_period": 20},
+            prices_df=df,
+            symbol="SPY",
+            include_hold=True
+        )
+
+        # Should have one signal per day
+        assert len(signals) == len(df)
+
+        # Should have HOLD signals
+        assert 'HOLD' in signals['action'].values
+
+
+class TestGapValidation:
+    """Tests for validate_completeness parameter in run_backtest."""
+
+    @pytest.fixture
+    def price_data(self):
+        """Daily price data."""
+        dates = pd.date_range("2024-01-01", periods=10, freq="B")
+        prices = [100 + i for i in range(10)]
+
+        return pd.DataFrame({
+            'date': dates,
+            'close': prices
+        })
+
+    @pytest.fixture
+    def complete_signals(self, price_data):
+        """Complete signals (one per day)."""
+        return pd.DataFrame({
+            'date': price_data['date'],
+            'action': ['HOLD'] * 10,
+            'price': price_data['close']
+        })
+
+    @pytest.fixture
+    def incomplete_signals(self, price_data):
+        """Incomplete signals (missing some days)."""
+        # Only include every other day
+        return pd.DataFrame({
+            'date': price_data['date'].iloc[::2],  # 0, 2, 4, 6, 8
+            'action': ['HOLD'] * 5,
+            'price': price_data['close'].iloc[::2]
+        })
+
+    def test_validate_completeness_passes_for_complete(self, complete_signals, price_data):
+        """Should pass when all trading days have signals."""
+        from trading_metrics import run_backtest
+
+        # Should not raise
+        result = run_backtest(
+            signals_df=complete_signals,
+            prices_df=price_data,
+            date_col='date',
+            price_col='close',
+            validate_completeness=True
+        )
+
+        assert result is not None
+
+    def test_validate_completeness_fails_for_gaps(self, incomplete_signals, price_data):
+        """Should raise InvalidDataError when trading days are missing."""
+        from trading_metrics import run_backtest, InvalidDataError
+
+        with pytest.raises(InvalidDataError, match="Missing predictions"):
+            run_backtest(
+                signals_df=incomplete_signals,
+                prices_df=price_data,
+                date_col='date',
+                price_col='close',
+                validate_completeness=True
+            )
+
+    def test_validate_completeness_off_allows_gaps(self, incomplete_signals, price_data):
+        """With validate_completeness=False, gaps should be allowed."""
+        from trading_metrics import run_backtest
+
+        # Should not raise
+        result = run_backtest(
+            signals_df=incomplete_signals,
+            prices_df=price_data,
+            date_col='date',
+            price_col='close',
+            validate_completeness=False  # Default
+        )
+
+        assert result is not None
+
+    def test_generate_signals_with_hold_for_gap_detection(self, price_data):
+        """Full workflow: generate with HOLD, backtest with validation."""
+        from trading_metrics import generate_signals, run_backtest
+
+        # Add required columns for generate_signals
+        full_data = price_data.copy()
+        full_data['high'] = full_data['close'] * 1.01
+        full_data['low'] = full_data['close'] * 0.99
+
+        # Generate with HOLD signals
+        signals = generate_signals(
+            model_type="stoploss",
+            config={"buy_dip_threshold": 0.05, "sell_drawdown_threshold": 0.08},
+            prices_df=full_data,
+            symbol="QQQ",
+            include_hold=True
+        )
+
+        # Backtest with validation should pass
+        result = run_backtest(
+            signals_df=signals,
+            prices_df=price_data,
+            date_col='date',
+            price_col='close',
+            validate_completeness=True
+        )
+
+        assert result is not None
+        assert len(signals) == len(price_data)
