@@ -282,7 +282,7 @@ def create_job(
     priority: int = 100
 ) -> Optional[int]:
     """
-    Create a new backfill job.
+    Create a new backfill job, or reset an existing completed/failed job.
 
     Args:
         job_type: 'prices' or 'predictions'
@@ -292,7 +292,7 @@ def create_job(
         priority: Lower = higher priority (default 100)
 
     Returns:
-        Job ID if created, None if failed or duplicate
+        Job ID if created/reset, None if job already pending/running
 
     Raises:
         ValueError: If validation fails (invalid job_type, dates, etc.)
@@ -322,11 +322,41 @@ def create_job(
         current += timedelta(days=1)
 
     with _engine.connect() as conn:
+        # Insert new job, or reset completed/failed jobs to pending
+        # Jobs that are pending/running are left unchanged
         result = conn.execute(text("""
             INSERT INTO backfill_jobs
-            (job_type, symbol, start_date, end_date, priority, items_total)
-            VALUES (:job_type, :symbol, :start_date, :end_date, :priority, :items_total)
-            ON CONFLICT (job_type, symbol, start_date, end_date) DO NOTHING
+            (job_type, symbol, start_date, end_date, priority, items_total, status)
+            VALUES (:job_type, :symbol, :start_date, :end_date, :priority, :items_total, 'pending')
+            ON CONFLICT (job_type, symbol, start_date, end_date) DO UPDATE SET
+                status = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN 'pending'
+                    ELSE backfill_jobs.status
+                END,
+                priority = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN EXCLUDED.priority
+                    ELSE backfill_jobs.priority
+                END,
+                items_completed = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN 0
+                    ELSE backfill_jobs.items_completed
+                END,
+                progress = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN 0
+                    ELSE backfill_jobs.progress
+                END,
+                error_message = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN NULL
+                    ELSE backfill_jobs.error_message
+                END,
+                started_at = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN NULL
+                    ELSE backfill_jobs.started_at
+                END,
+                completed_at = CASE
+                    WHEN backfill_jobs.status IN ('completed', 'failed') THEN NULL
+                    ELSE backfill_jobs.completed_at
+                END
             RETURNING id
         """), {
             'job_type': job_type,
